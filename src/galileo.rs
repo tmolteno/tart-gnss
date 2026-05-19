@@ -128,9 +128,12 @@ pub fn acquire_galileo_single(
     let samples_per_code_period = (sampling_freq * 0.004) as usize;
 
     let epochs_available = (x.len() as f64 / samples_per_code_period as f64).floor();
-    // Use at least 1 full code period
+    // Use at least 1 full code period of samples for the local replica,
+    // but never exceed the actual available signal samples.
     let epochs = epochs_available.max(1.0);
-    let total_samples = (epochs * samples_per_code_period as f64) as usize;
+    let ideal_samples = (epochs * samples_per_code_period as f64) as usize;
+    let num_samples = ideal_samples.min(x.len());
+    let effective_epochs = num_samples as f64 / samples_per_code_period as f64;
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -144,11 +147,11 @@ pub fn acquire_galileo_single(
 
     // --- FFT planner -------------------------------------------------------
     let mut planner: FftPlanner<f32> = FftPlanner::new();
-    let fft = planner.plan_fft_forward(total_samples);
-    let ifft = planner.plan_fft_inverse(total_samples);
+    let fft = planner.plan_fft_forward(num_samples);
+    let ifft = planner.plan_fft_inverse(num_samples);
 
     // --- Local code replica ------------------------------------------------
-    let code = e1c_code_resampled(samples_per_code_period as f64, prn, epochs);
+    let code = e1c_code_resampled(samples_per_code_period as f64, prn, effective_epochs);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -160,17 +163,16 @@ pub fn acquire_galileo_single(
 
     // --- Pre-compute phase ramp --------------------------------------------
     let phase_const = TAU * sampling_period;
-    let phasepoints: Vec<f64> = (0..total_samples)
+    let phasepoints: Vec<f64> = (0..num_samples)
         .map(|i| phase_const * i as f64)
         .collect();
 
     // --- Per-frequency-bin correlation -------------------------------------
-    let signal_len = total_samples.min(x.len());
     let mut best_peak: f32 = f32::NEG_INFINITY;
     let mut best_freq_idx: usize = 0;
     let mut best_codephase: usize = 0;
 
-    let signal_f32: Vec<f32> = x[..signal_len].iter().map(|&v| v as f32).collect();
+    let signal_f32: Vec<f32> = x[..num_samples].iter().map(|&v| v as f32).collect();
 
     for (fi, &freq) in fc.iter().enumerate() {
         let mut iq: Vec<Complex<f32>> = phasepoints
@@ -190,7 +192,7 @@ pub fn acquire_galileo_single(
 
         ifft.process(&mut iq);
 
-        let scale = 1.0 / (signal_len as f32).sqrt();
+        let scale = 1.0 / (num_samples as f32).sqrt();
         let corr: Vec<f32> = iq.iter().map(|c| c.norm() * scale).collect();
 
         let (peak_idx, &peak_val) = corr
