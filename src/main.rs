@@ -6,6 +6,8 @@ mod beidou;
 mod config;
 mod galileo;
 mod observation;
+mod sbas;
+mod stats;
 
 use observation::Observation;
 use serde::Serialize;
@@ -18,6 +20,8 @@ struct CombinedOutput {
     galileo: Option<galileo::GalileoAllAcquisitionOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     beidou: Option<beidou::BeiDouAllAcquisitionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sbas: Option<sbas::SbasAllAcquisitionOutput>,
 }
 
 fn main() {
@@ -29,8 +33,13 @@ fn main() {
     let mut gps_flag = false;
     let mut galileo_flag = false;
     let mut beidou_flag = false;
+    let mut sbas_flag = false;
     let mut all_flag = false;
     let mut single_ant: Option<usize> = None;
+    let mut filter_phase_mad: Option<f64> = None;
+    let mut filter_freq_mad: Option<f64> = None;
+    let mut output_file: Option<String> = None;
+    let mut debug_flag = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -56,12 +65,30 @@ fn main() {
             "--beidou" => {
                 beidou_flag = true;
             }
+            "--sbas" => {
+                sbas_flag = true;
+            }
             "--all" => {
                 all_flag = true;
             }
             "--ant" => {
                 i += 1;
                 single_ant = Some(args[i].parse().expect("invalid integer for --ant"));
+            }
+            "--filter-phase-mad" => {
+                i += 1;
+                filter_phase_mad = Some(args[i].parse().expect("invalid float for --filter-phase-mad"));
+            }
+            "--filter-freq-mad" => {
+                i += 1;
+                filter_freq_mad = Some(args[i].parse().expect("invalid float for --filter-freq-mad"));
+            }
+            "--output" => {
+                i += 1;
+                output_file = Some(args[i].clone());
+            }
+            "--debug" => {
+                debug_flag = true;
             }
             other => {
                 eprintln!("unknown argument: {other}");
@@ -71,16 +98,17 @@ fn main() {
         i += 1;
     }
 
-    // --all implies all three constellations
+    // --all implies all four constellations
     if all_flag {
         gps_flag = true;
         galileo_flag = true;
         beidou_flag = true;
+        sbas_flag = true;
     }
 
     let file = file.unwrap_or_else(|| {
         eprintln!(
-            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--ant <idx>]",
+            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
             args[0]
         );
         std::process::exit(1);
@@ -97,7 +125,7 @@ fn main() {
     eprintln!("antennas:    {n_ant}");
     eprintln!("sample rate: {sampling_freq} Hz");
 
-    let any_acq = gps_flag || galileo_flag || beidou_flag;
+    let any_acq = gps_flag || galileo_flag || beidou_flag || sbas_flag;
 
     if any_acq {
         // Validate --ant index once for all acquisition modes
@@ -112,6 +140,7 @@ fn main() {
             gps: None,
             galileo: None,
             beidou: None,
+            sbas: None,
         };
 
         // --- GPS -----------------------------------------------------------
@@ -125,6 +154,7 @@ fn main() {
                 acquisition::GPS_IF,
                 acquisition::GPS_SEARCH_BAND,
                 single_ant,
+                debug_flag,
             ));
         }
 
@@ -138,6 +168,7 @@ fn main() {
                 galileo_if,
                 galileo_search_band,
                 single_ant,
+                debug_flag,
             ));
         }
 
@@ -151,19 +182,91 @@ fn main() {
                 beidou_if,
                 beidou_search_band,
                 single_ant,
+                debug_flag,
             ));
         }
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).expect("JSON serialization failed")
-        );
+        // --- SBAS ----------------------------------------------------------
+        if sbas_flag {
+            eprintln!(
+                "Running SBAS L1 C/A all-PRN search ({} PRNs)...",
+                sbas::SBAS_NUM_SATS
+            );
+            output.sbas = Some(sbas::acquire_all_sbas(
+                &obs,
+                sbas::SBAS_IF,
+                sbas::SBAS_SEARCH_BAND,
+                single_ant,
+                debug_flag,
+            ));
+        }
+
+        // --- Apply MAD filters ---------------------------------------------
+        if filter_phase_mad.is_some() || filter_freq_mad.is_some() {
+            let mut filter_count = 0u64;
+
+            if let Some(ref mut gps_out) = output.gps {
+                let before = gps_out.results.len();
+                if let Some(thresh) = filter_phase_mad {
+                    gps_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
+                }
+                if let Some(thresh) = filter_freq_mad {
+                    gps_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
+                }
+                filter_count += (before - gps_out.results.len()) as u64;
+            }
+            if let Some(ref mut gal_out) = output.galileo {
+                let before = gal_out.results.len();
+                if let Some(thresh) = filter_phase_mad {
+                    gal_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
+                }
+                if let Some(thresh) = filter_freq_mad {
+                    gal_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
+                }
+                filter_count += (before - gal_out.results.len()) as u64;
+            }
+            if let Some(ref mut bd_out) = output.beidou {
+                let before = bd_out.results.len();
+                if let Some(thresh) = filter_phase_mad {
+                    bd_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
+                }
+                if let Some(thresh) = filter_freq_mad {
+                    bd_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
+                }
+                filter_count += (before - bd_out.results.len()) as u64;
+            }
+            if let Some(ref mut sb_out) = output.sbas {
+                let before = sb_out.results.len();
+                if let Some(thresh) = filter_phase_mad {
+                    sb_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
+                }
+                if let Some(thresh) = filter_freq_mad {
+                    sb_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
+                }
+                filter_count += (before - sb_out.results.len()) as u64;
+            }
+
+            if filter_count > 0 {
+                eprintln!("Filtered out {filter_count} results (MAD thresholds)");
+            }
+        }
+
+        let json = serde_json::to_string_pretty(&output).expect("JSON serialization failed");
+        if let Some(path) = &output_file {
+            std::fs::write(path, &json).unwrap_or_else(|e| {
+                eprintln!("error writing output file {path}: {e}");
+                std::process::exit(1);
+            });
+            eprintln!("Wrote JSON output to {path}");
+        } else {
+            println!("{json}");
+        }
         return;
     }
 
     // --- Correlation mode --------------------------------------------------
     let i = antenna_i.unwrap_or_else(|| {
-        eprintln!("missing --i <antenna_i> (or use --gps, --galileo, --beidou, or --all)");
+        eprintln!("missing --i <antenna_i> (or use --gps, --galileo, --beidou, --sbas, or --all)");
         std::process::exit(1);
     });
     let j = antenna_j.unwrap_or_else(|| {

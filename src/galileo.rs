@@ -17,6 +17,7 @@ use rayon::prelude::*;
 use rustfft::FftPlanner;
 use serde::Serialize;
 use std::f64::consts::TAU;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Result of a Galileo E1 signal acquisition attempt for a single satellite.
 #[derive(Debug, Clone, Serialize)]
@@ -41,6 +42,18 @@ pub struct GalileoPrnResult {
     pub phases: Vec<f64>,
     /// Per-antenna Doppler frequency offsets (Hz).
     pub freqs: Vec<f64>,
+    /// Median phase across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_median: Option<f64>,
+    /// MAD of phase across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_mad: Option<f64>,
+    /// Median frequency across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freq_median: Option<f64>,
+    /// MAD of frequency across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freq_mad: Option<f64>,
 }
 
 /// Collection of acquisition results for all Galileo SVs, grouped by PRN.
@@ -221,6 +234,7 @@ pub fn acquire_all_galileo(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    debug: bool,
 ) -> GalileoAllAcquisitionOutput {
     let sampling_freq = obs.get_sampling_rate();
     let n_ant = obs.config.num_antenna();
@@ -247,6 +261,9 @@ pub fn acquire_all_galileo(
         .collect();
 
     // Parallel PRN search ----------------------------------------------------
+    let total = GALILEO_E1_NUM_SATS;
+    let counter = AtomicUsize::new(0);
+
     let mut results: Vec<GalileoPrnResult> = (1..=GALILEO_E1_NUM_SATS)
         .into_par_iter()
         .map(|prn| {
@@ -263,25 +280,51 @@ pub fn acquire_all_galileo(
                     prn,
                 );
 
-                eprintln!(
-                    "  galileo PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
-                    prn,
-                    ant_indices[i],
-                    result.signal_strength,
-                    result.codephase_frac,
-                    result.frequency
-                );
+                if debug {
+                    eprintln!(
+                        "  galileo PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
+                        prn,
+                        ant_indices[i],
+                        result.signal_strength,
+                        result.codephase_frac,
+                        result.frequency
+                    );
+                }
 
                 strengths.push(result.signal_strength);
                 phases.push(result.codephase_frac);
                 freqs.push(result.frequency);
             }
 
+            let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!("  galileo [{n}/{total}]");
+            if debug {
+                eprintln!("  galileo [{n}/{total}] PRN {prn:02} complete");
+            }
+
+            let (phase_median, phase_mad, freq_median, freq_mad) =
+                if phases.len() > 1 {
+                    let pm = crate::stats::median(&phases);
+                    let fm = crate::stats::median(&freqs);
+                    (
+                        Some(pm),
+                        Some(crate::stats::mad(&phases, pm)),
+                        Some(fm),
+                        Some(crate::stats::mad(&freqs, fm)),
+                    )
+                } else {
+                    (None, None, None, None)
+                };
+
             GalileoPrnResult {
                 sv: format!("GSAT{prn:02}"),
                 strengths,
                 phases,
                 freqs,
+                phase_median,
+                phase_mad,
+                freq_median,
+                freq_mad,
             }
         })
         .collect();

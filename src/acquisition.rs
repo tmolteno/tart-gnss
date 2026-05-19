@@ -10,6 +10,7 @@ use num_complex::Complex;
 use rayon::prelude::*;
 use rustfft::FftPlanner;
 use std::f64::consts::TAU;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::observation::Observation;
 
@@ -36,6 +37,18 @@ pub struct GpsPrnResult {
     pub phases: Vec<f64>,
     /// Per-antenna Doppler frequency offsets (Hz).
     pub freqs: Vec<f64>,
+    /// Median phase across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_median: Option<f64>,
+    /// MAD of phase across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase_mad: Option<f64>,
+    /// Median frequency across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freq_median: Option<f64>,
+    /// MAD of frequency across antennas (only when >1 antenna).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub freq_mad: Option<f64>,
 }
 
 /// Collection of GPS acquisition results for all PRNs, grouped by PRN.
@@ -66,22 +79,19 @@ const CODE_DELAY_TABLE: [usize; 38] = [
 ];
 
 /// Number of chips in one GPS L1 C/A code period.
-const CA_CHIPS: usize = 1023;
+pub const CA_CHIPS: usize = 1023;
 
-/// Generate the 1023-chip GPS C/A gold code for a given PRN (1-based).
+/// Generate the 1023-chip C/A gold code for an arbitrary G2 shift.
 ///
-/// Returns a `[f64; CA_CHIPS]` array of ±1 values.
-pub fn generate_ca_code(prn: usize) -> [f64; CA_CHIPS] {
-    assert!(prn >= 1 && prn <= 38, "PRN must be in 1..=38, got {prn}");
-    let g2shift = CODE_DELAY_TABLE[prn - 1];
-
+/// `g2shift` is the number of chips to delay G2 relative to G1 (0..1022).
+/// Used by both GPS and SBAS code generators.
+pub fn generate_ca_code_from_delay(g2shift: usize) -> [f64; CA_CHIPS] {
     // --- G1 ----------------------------------------------------------------
     let mut g1 = [0.0f64; CA_CHIPS];
     let mut lfsr = [-1.0f64; 10]; // initialised to all -1 (bipolar)
     for i in 0..CA_CHIPS {
         g1[i] = lfsr[9];
         let save_bit = lfsr[2] * lfsr[9];
-        // shift right: lfsr[0..9] → lfsr[1..10], insert save_bit at 0
         lfsr.copy_within(0..9, 1);
         lfsr[0] = save_bit;
     }
@@ -106,10 +116,22 @@ pub fn generate_ca_code(prn: usize) -> [f64; CA_CHIPS] {
     ca
 }
 
-/// Resample the C/A code to `samples_per_code` samples per period,
-/// repeating for `epochs` full periods.
-pub fn gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
-    let ca = generate_ca_code(prn);
+/// Generate the 1023-chip GPS C/A gold code for a given PRN (1-based).
+///
+/// Returns a `[f64; CA_CHIPS]` array of ±1 values.
+pub fn generate_ca_code(prn: usize) -> [f64; CA_CHIPS] {
+    assert!(prn >= 1 && prn <= 38, "PRN must be in 1..=38, got {prn}");
+    let g2shift = CODE_DELAY_TABLE[prn - 1];
+    generate_ca_code_from_delay(g2shift)
+}
+
+/// Resample a pre-generated C/A code array to `samples_per_code` samples
+/// per period, repeating for `epochs` full periods.
+pub fn gold_code_from_ca(
+    samples_per_code: f64,
+    ca: &[f64; CA_CHIPS],
+    epochs: f64,
+) -> Vec<f64> {
     let samples_per_chip = samples_per_code / CA_CHIPS as f64;
     let num_samples = (samples_per_code * epochs).floor() as usize;
 
@@ -119,6 +141,13 @@ pub fn gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
             ca[idx]
         })
         .collect()
+}
+
+/// Resample the C/A code to `samples_per_code` samples per period,
+/// repeating for `epochs` full periods.
+pub fn gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
+    let ca = generate_ca_code(prn);
+    gold_code_from_ca(samples_per_code, &ca, epochs)
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +277,7 @@ pub fn acquire_all_gps(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    debug: bool,
 ) -> GpsAllAcquisitionOutput {
     let sampling_freq = obs.get_sampling_rate();
     let n_ant = obs.config.num_antenna();
@@ -273,6 +303,9 @@ pub fn acquire_all_gps(
         })
         .collect();
 
+    let total = GPS_NUM_SATS;
+    let counter = AtomicUsize::new(0);
+
     let mut results: Vec<GpsPrnResult> = (1..=GPS_NUM_SATS)
         .into_par_iter()
         .map(|prn| {
@@ -283,25 +316,51 @@ pub fn acquire_all_gps(
             for (i, raw) in ant_data.iter().enumerate() {
                 let result = acquire_full(raw, sampling_freq, center_freq, search_band, prn);
 
-                eprintln!(
-                    "  gps PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
-                    prn,
-                    ant_indices[i],
-                    result.signal_strength,
-                    result.codephase_frac,
-                    result.frequency
-                );
+                if debug {
+                    eprintln!(
+                        "  gps PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
+                        prn,
+                        ant_indices[i],
+                        result.signal_strength,
+                        result.codephase_frac,
+                        result.frequency
+                    );
+                }
 
                 strengths.push(result.signal_strength);
                 phases.push(result.codephase_frac);
                 freqs.push(result.frequency);
             }
 
+            let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
+            eprintln!("  gps [{n}/{total}]");
+            if debug {
+                eprintln!("  gps [{n}/{total}] PRN {prn:02} complete");
+            }
+
+            let (phase_median, phase_mad, freq_median, freq_mad) =
+                if phases.len() > 1 {
+                    let pm = crate::stats::median(&phases);
+                    let fm = crate::stats::median(&freqs);
+                    (
+                        Some(pm),
+                        Some(crate::stats::mad(&phases, pm)),
+                        Some(fm),
+                        Some(crate::stats::mad(&freqs, fm)),
+                    )
+                } else {
+                    (None, None, None, None)
+                };
+
             GpsPrnResult {
                 sv: format!("GPS{prn:02}"),
                 strengths,
                 phases,
                 freqs,
+                phase_median,
+                phase_mad,
+                freq_median,
+                freq_mad,
             }
         })
         .collect();

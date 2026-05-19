@@ -1,6 +1,6 @@
 [package]
 name = "tart-gnss-acquire"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "GNSS signal acquisition for the TART radio telescope — GPS L1 C/A, Galileo E1-C, and BeiDou B1C"
 license = "GPL-3.0"

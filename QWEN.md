@@ -1,8 +1,8 @@
 # QWEN.md — tart-gnss-acquire
 
-Rust CLI for GNSS signal acquisition (GPS L1 C/A, Galileo E1-C, BeiDou B1C)
-and antenna cross-correlation using data from the TART radio telescope.
-Ported from the Python `tart.tart.operation` module.
+Rust CLI for GNSS signal acquisition (GPS L1 C/A, Galileo E1-C, BeiDou B1C,
+SBAS L1 C/A) and antenna cross-correlation using data from the TART radio
+telescope.  Ported from the Python `tart.tart.operation` module.
 
 ## Build & test
 
@@ -25,25 +25,34 @@ cargo run -- --file data/observation.hdf --galileo
 # BeiDou B1C all-SV pilot channel search
 cargo run -- --file data/observation.hdf --beidou
 
-# All three constellations
+# SBAS L1 C/A all-PRN search
+cargo run -- --file data/observation.hdf --sbas
+
+# All four constellations
 cargo run -- --file data/observation.hdf --all
 
 # Single antenna only
 cargo run -- --file data/observation.hdf --gps --ant 0
+
+# Filter by inter-antenna MAD
+cargo run -- --file data/observation.hdf --all --filter-phase-mad 0.002 --filter-freq-mad 100.0
 
 # Antenna cross-correlation
 cargo run -- --file data/observation.hdf --i 0 --j 1
 ```
 
 Arguments:
-- `--file <path>` — HDF5 observation file (required)
-- `--gps`         — GPS L1 C/A all-PRN (1–38) search
-- `--galileo`     — Galileo E1-C all-SV pilot (1–50) search
-- `--beidou`      — BeiDou B1C all-SV pilot (1–63) search
-- `--all`         — run all three constellations
-- `--ant <idx>`   — restrict acquisition to a single antenna
-- `--i <idx>`     — first antenna index (correlation mode)
-- `--j <idx>`     — second antenna index (correlation mode)
+- `--file <path>`           — HDF5 observation file (required)
+- `--gps`                   — GPS L1 C/A all-PRN (1–38) search
+- `--galileo`               — Galileo E1-C all-SV pilot (1–50) search
+- `--beidou`                — BeiDou B1C all-SV pilot (1–63) search
+- `--sbas`                  — SBAS L1 C/A all-PRN (120–138) search
+- `--all`                   — run all four constellations
+- `--ant <idx>`             — restrict acquisition to a single antenna
+- `--filter-phase-mad <x>`  — drop PRNs with phase MAD > x (multi-antenna only)
+- `--filter-freq-mad <x>`   — drop PRNs with frequency MAD > x (multi-antenna only)
+- `--i <idx>`               — first antenna index (correlation mode)
+- `--j <idx>`               — second antenna index (correlation mode)
 
 ## Source layout
 
@@ -57,6 +66,8 @@ Arguments:
 | `src/galileo_codes.rs`| Galileo E1-C primary codes (50 PRNs, hex-encoded)     |
 | `src/beidou.rs`       | BeiDou B1C pilot acquisition (10230-chip Weil codes)  |
 | `src/beidou_codes.rs` | BeiDou B1C Legendre/Weil code generation              |
+| `src/sbas.rs`         | SBAS L1 C/A acquisition (PRN 120–138, gold codes)     |
+| `src/stats.rs`        | `median()` and `mad()` robust statistics              |
 
 ## Key dependencies
 
