@@ -27,15 +27,22 @@ pub struct GalileoAcquisitionResult {
     pub frequency: f64,
 }
 
-/// Collection of acquisition results for all Galileo SVs.
+/// Per-PRN Galileo acquisition result (best antenna).
+#[derive(Debug, Clone, Serialize)]
+pub struct GalileoPrnResult {
+    pub prn: usize,
+    /// Peak correlation magnitude (normalised).
+    pub signal_strength: f64,
+    /// Code-phase offset in fractions of a code period [0, 1).
+    pub codephase_frac: f64,
+    /// Doppler frequency offset in Hz (relative to centre frequency).
+    pub frequency: f64,
+}
+
+/// Collection of acquisition results for all Galileo SVs, grouped by PRN.
 #[derive(Debug, Clone, Serialize)]
 pub struct GalileoAllAcquisitionOutput {
-    /// Per-PRN signal strengths, ordered by PRN 1..=50.
-    pub strengths: Vec<f64>,
-    /// Per-PRN code-phase offsets.
-    pub phases: Vec<f64>,
-    /// Per-PRN Doppler frequency offsets (Hz).
-    pub freqs: Vec<f64>,
+    pub results: Vec<GalileoPrnResult>,
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +243,7 @@ pub fn acquire_all_galileo(
         .collect();
 
     // Parallel PRN search ----------------------------------------------------
-    let mut results: Vec<(usize, f64, f64, f64)> = (1..=GALILEO_E1_NUM_SATS)
+    let mut results: Vec<GalileoPrnResult> = (1..=GALILEO_E1_NUM_SATS)
         .into_par_iter()
         .map(|prn| {
             let mut best_strength = f64::NEG_INFINITY;
@@ -268,22 +275,18 @@ pub fn acquire_all_galileo(
                 }
             }
 
-            (prn, best_strength, best_phase, best_freq)
+            GalileoPrnResult {
+                prn,
+                signal_strength: best_strength,
+                codephase_frac: best_phase,
+                frequency: best_freq,
+            }
         })
         .collect();
 
-    // Sort by PRN to maintain ordering
-    results.sort_by_key(|(prn, ..)| *prn);
+    results.sort_by_key(|r| r.prn);
 
-    let strengths: Vec<f64> = results.iter().map(|(_, s, ..)| *s).collect();
-    let phases: Vec<f64> = results.iter().map(|(_, _, p, _)| *p).collect();
-    let freqs: Vec<f64> = results.iter().map(|(_, _, _, f)| *f).collect();
-
-    GalileoAllAcquisitionOutput {
-        strengths,
-        phases,
-        freqs,
-    }
+    GalileoAllAcquisitionOutput { results }
 }
 
 #[cfg(test)]

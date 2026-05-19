@@ -4,8 +4,11 @@
 //! Ported from `tart/tart/operation/acquisition.py`.
 
 use num_complex::Complex;
+use rayon::prelude::*;
 use rustfft::FftPlanner;
 use std::f64::consts::TAU;
+
+use crate::observation::Observation;
 
 /// Result of a GPS signal acquisition attempt for a single antenna.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -18,6 +21,33 @@ pub struct AcquisitionResult {
     /// Doppler frequency offset in Hz (relative to centre frequency).
     pub frequency: f64,
 }
+
+/// Per-PRN GPS acquisition result with per-antenna measurements.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GpsPrnResult {
+    pub prn: usize,
+    /// Per-antenna signal strengths.
+    pub strengths: Vec<f64>,
+    /// Per-antenna code-phase offsets (fraction of a millisecond).
+    pub phases: Vec<f64>,
+    /// Per-antenna Doppler frequency offsets (Hz).
+    pub freqs: Vec<f64>,
+}
+
+/// Collection of GPS acquisition results for all PRNs, grouped by PRN.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GpsAllAcquisitionOutput {
+    pub results: Vec<GpsPrnResult>,
+}
+
+/// Number of GPS PRNs with defined C/A codes.
+pub const GPS_NUM_SATS: usize = 38;
+
+/// GPS L1 intermediate frequency in Hz.
+pub const GPS_IF: f64 = 4.092e6;
+
+/// Default search bandwidth in Hz.
+pub const GPS_SEARCH_BAND: f64 = 6000.0;
 
 // ---------------------------------------------------------------------------
 // GPS C/A code generation
@@ -196,6 +226,85 @@ pub fn acquire_full(
         codephase_frac,
         frequency,
     }
+}
+
+// ---------------------------------------------------------------------------
+// All-PRN search
+// ---------------------------------------------------------------------------
+
+/// Search for all GPS L1 C/A PRNs across selected antennas.
+///
+/// If `ant_filter` is `Some(idx)`, only that antenna is used; otherwise all
+/// antennas are searched.  PRN processing is parallelised via rayon.
+///
+/// For each PRN, per-antenna signal strengths, code-phase offsets, and
+/// Doppler frequency offsets are collected.
+pub fn acquire_all_gps(
+    obs: &Observation,
+    center_freq: f64,
+    search_band: f64,
+    ant_filter: Option<usize>,
+) -> GpsAllAcquisitionOutput {
+    let sampling_freq = obs.get_sampling_rate();
+    let n_ant = obs.config.num_antenna();
+    let samples_per_ms = sampling_freq / 1000.0;
+    let num_samples_per_ms = samples_per_ms as usize;
+    // Use 2 ms of data per antenna (matches the single-PRN mode).
+    let num_samples = 2 * num_samples_per_ms;
+
+    let ant_indices: Vec<usize> = if let Some(ant) = ant_filter {
+        vec![ant]
+    } else {
+        (0..n_ant).collect()
+    };
+
+    // Pre-extract and de-mean all antenna data (avoids repeated HDF5 reads).
+    let ant_data: Vec<Vec<f64>> = ant_indices
+        .iter()
+        .map(|&ant_idx| {
+            let bipolar = obs.get_antenna(ant_idx);
+            let mean = bipolar.iter().sum::<f64>() / bipolar.len() as f64;
+            let raw: Vec<f64> = bipolar.iter().map(|&v| v - mean).collect();
+            raw[..num_samples.min(raw.len())].to_vec()
+        })
+        .collect();
+
+    let mut results: Vec<GpsPrnResult> = (1..=GPS_NUM_SATS)
+        .into_par_iter()
+        .map(|prn| {
+            let mut strengths = Vec::with_capacity(ant_indices.len());
+            let mut phases = Vec::with_capacity(ant_indices.len());
+            let mut freqs = Vec::with_capacity(ant_indices.len());
+
+            for (i, raw) in ant_data.iter().enumerate() {
+                let result = acquire_full(raw, sampling_freq, center_freq, search_band, prn);
+
+                eprintln!(
+                    "  gps PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
+                    prn,
+                    ant_indices[i],
+                    result.signal_strength,
+                    result.codephase_frac,
+                    result.frequency
+                );
+
+                strengths.push(result.signal_strength);
+                phases.push(result.codephase_frac);
+                freqs.push(result.frequency);
+            }
+
+            GpsPrnResult {
+                prn,
+                strengths,
+                phases,
+                freqs,
+            }
+        })
+        .collect();
+
+    results.sort_by_key(|r| r.prn);
+
+    GpsAllAcquisitionOutput { results }
 }
 
 #[cfg(test)]
