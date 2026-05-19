@@ -2,8 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/tart-gnss-acquire)](https://crates.io/crates/tart-gnss-acquire)
 
-GNSS signal acquisition for the TART radio telescope — GPS L1 C/A, Galileo
-E1-C, BeiDou B1C, and SBAS.
+GNSS signal acquisition for the TART radio telescope — GPS L1 C/A, GPS L1C,
+Galileo E1-C, BeiDou B1C, and SBAS.
 
 ## Quick start
 
@@ -15,11 +15,14 @@ tart-gnss-acquire --file observation.hdf --all
 ## Usage
 
 ```bash
-# All four constellations
+# All five constellations
 tart-gnss-acquire --file data/observation.hdf --all
 
-# GPS only
+# GPS L1 C/A only
 tart-gnss-acquire --file data/observation.hdf --gps
+
+# GPS L1C only
+tart-gnss-acquire --file data/observation.hdf --l1c
 
 # SBAS only
 tart-gnss-acquire --file data/observation.hdf --sbas
@@ -42,7 +45,8 @@ tart-gnss-acquire --file data/observation.hdf --i 0 --j 1
 | `--galileo`               | Galileo E1-C all-SV pilot search (1–50)             |
 | `--beidou`                | BeiDou B1C all-SV pilot search (1–63)               |
 | `--sbas`                  | SBAS L1 C/A all-PRN search (120–138)                |
-| `--all`                   | Run GPS + Galileo + BeiDou + SBAS                   |
+| `--l1c`                   | GPS L1C all-SV pilot search (1–63)                  |
+| `--all`                   | Run all five constellations                         |
 | `--ant IDX`               | Restrict acquisition to a single antenna            |
 | `--filter-phase-mad X`    | Drop PRNs with phase MAD > X (multi-antenna only)   |
 | `--filter-freq-mad X`     | Drop PRNs with frequency MAD > X (multi-antenna only) |
@@ -60,6 +64,7 @@ contains one key per requested constellation:
 | `galileo`  | Galileo E1-C  | 1–50      | `GSAT01`        |
 | `beidou`   | BeiDou B1C    | 1–63      | `BEIDOU01`      |
 | `sbas`     | SBAS L1 C/A   | 120–138   | `SBAS120`       |
+| `l1c`      | GPS L1C       | 1–63      | `GPSL1C01`      |
 
 Each constellation value is an object with a `results` array.  Each element
 in the array describes one satellite/PRN:
