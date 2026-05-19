@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 use chrono::{DateTime, Utc};
 use hdf5_reader::{Hdf5File};
 

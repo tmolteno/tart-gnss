@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 //! Galileo E1-C primary codes (pilot channel).
 //!
 //! 4092-chip memory codes from the Galileo OS SIS ICD, stored as hex strings.

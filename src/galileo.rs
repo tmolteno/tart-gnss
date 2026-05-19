@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 //! Galileo E1 Open Service pilot (E1-C) signal acquisition via FFT-based
 //! circular cross-correlation.
 //!

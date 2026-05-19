@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 //! BeiDou B1C pilot (B1C_pilot) signal acquisition via FFT-based
 //! circular cross-correlation.
 //!

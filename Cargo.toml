@@ -3,7 +3,8 @@ name = "tart-gnss-acquire"
 version = "0.1.0"
 edition = "2021"
 description = "GNSS signal acquisition for the TART radio telescope — GPS L1 C/A, Galileo E1-C, and BeiDou B1C"
-license = "MIT"
+license = "GPL-3.0"
+authors = ["Tim Molteno <tim@elec.ac.nz>"]
 repository = "https://github.com/tmolteno/tart-gnss"
 
 [dependencies]

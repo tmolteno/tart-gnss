@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 use serde::Deserialize;
 
 /// Minimal configuration parsed from the TART JSON config stored in HDF5.

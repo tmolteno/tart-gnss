@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 //! GPS L1 C/A code generation and signal acquisition via FFT-based
 //! circular cross-correlation.
 //!

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
+// SPDX-License-Identifier: GPL-3.0
+
 //! BeiDou B1C primary codes (pilot component, B1Cp).
 //!
 //! 10230-chip Weil codes derived from a Legendre sequence of length 10243.
