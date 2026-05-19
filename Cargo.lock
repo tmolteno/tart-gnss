@@ -578,7 +578,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tart-gnss"
+name = "tart-gnss-acquire"
 version = "0.1.0"
 dependencies = [
  "chrono",

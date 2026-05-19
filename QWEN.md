@@ -1,8 +1,8 @@
-# QWEN.md — gnss-tart
+# QWEN.md — tart-gnss-acquire
 
-Rust CLI for GPS L1 C/A signal acquisition and antenna cross-correlation using
-data from the TART radio telescope. Ported from the Python
-`tart.tart.operation` module.
+Rust CLI for GNSS signal acquisition (GPS L1 C/A, Galileo E1-C, BeiDou B1C)
+and antenna cross-correlation using data from the TART radio telescope.
+Ported from the Python `tart.tart.operation` module.
 
 ## Build & test
 
@@ -16,11 +16,20 @@ cargo clippy             # lint (when available)
 ## Usage
 
 ```bash
-# GPS acquisition for a single PRN
-cargo run -- --file data/observation.hdf --gps 5
+# GPS L1 C/A all-PRN search
+cargo run -- --file data/observation.hdf --gps
 
 # Galileo E1-C all-SV pilot channel search
 cargo run -- --file data/observation.hdf --galileo
+
+# BeiDou B1C all-SV pilot channel search
+cargo run -- --file data/observation.hdf --beidou
+
+# All three constellations
+cargo run -- --file data/observation.hdf --all
+
+# Single antenna only
+cargo run -- --file data/observation.hdf --gps --ant 0
 
 # Antenna cross-correlation
 cargo run -- --file data/observation.hdf --i 0 --j 1
@@ -28,22 +37,26 @@ cargo run -- --file data/observation.hdf --i 0 --j 1
 
 Arguments:
 - `--file <path>` — HDF5 observation file (required)
-- `--gps <prn>`   — GPS PRN 1–38; runs acquisition mode
-- `--galileo`     — run Galileo E1-C all-SV (PRN 1–50) pilot channel search
-- `--ant <idx>`   — restrict GPS/Galileo acquisition to a single antenna
+- `--gps`         — GPS L1 C/A all-PRN (1–38) search
+- `--galileo`     — Galileo E1-C all-SV pilot (1–50) search
+- `--beidou`      — BeiDou B1C all-SV pilot (1–63) search
+- `--all`         — run all three constellations
+- `--ant <idx>`   — restrict acquisition to a single antenna
 - `--i <idx>`     — first antenna index (correlation mode)
 - `--j <idx>`     — second antenna index (correlation mode)
 
 ## Source layout
 
-| File              | Purpose                                          |
-|-------------------|--------------------------------------------------|
-| `src/main.rs`     | CLI argument parsing, mode dispatch              |
-| `src/config.rs`   | `Config` — deserialises TART JSON from HDF5      |
-| `src/observation.rs` | `Observation` — HDF5 reader, unpacking, correlation |
-| `src/acquisition.rs` | GPS C/A code gen + FFT circular cross-correlation |
-| `src/galileo.rs`  | Galileo E1-C pilot acquisition (4092-chip codes) |
-| `src/galileo_codes.rs` | Galileo E1-C primary codes (50 PRNs, hex-encoded) |
+| File                  | Purpose                                              |
+|-----------------------|------------------------------------------------------|
+| `src/main.rs`         | CLI argument parsing, mode dispatch, combined output  |
+| `src/config.rs`       | `Config` — deserialises TART JSON from HDF5           |
+| `src/observation.rs`  | `Observation` — HDF5 reader, unpacking, correlation   |
+| `src/acquisition.rs`  | GPS C/A code gen + FFT circular cross-correlation     |
+| `src/galileo.rs`      | Galileo E1-C pilot acquisition (4092-chip codes)      |
+| `src/galileo_codes.rs`| Galileo E1-C primary codes (50 PRNs, hex-encoded)     |
+| `src/beidou.rs`       | BeiDou B1C pilot acquisition (10230-chip Weil codes)  |
+| `src/beidou_codes.rs` | BeiDou B1C Legendre/Weil code generation              |
 
 ## Key dependencies
 
@@ -51,9 +64,8 @@ Arguments:
 - `serde` / `serde_json` — config deserialisation, JSON output
 - `chrono` — UTC timestamps
 - `rustfft` / `num-complex` — FFT-based acquisition
-- `rayon` — parallel PRN search for Galileo all-SV mode
+- `rayon` — parallel PRN search for multi-SV modes
 
 ## Repository
 
-Part of the `elec-otago/molteno` monorepo (this crate lives at
-`physics/gnss-tart/`).
+<https://github.com/tmolteno/tart-gnss>
