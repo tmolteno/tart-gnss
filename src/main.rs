@@ -5,6 +5,7 @@ mod acquisition;
 mod beidou;
 mod config;
 mod galileo;
+mod l1c;
 mod observation;
 mod sbas;
 mod stats;
@@ -22,6 +23,8 @@ struct CombinedOutput {
     beidou: Option<beidou::BeiDouAllAcquisitionOutput>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sbas: Option<sbas::SbasAllAcquisitionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    l1c: Option<l1c::L1CAllAcquisitionOutput>,
 }
 
 fn main() {
@@ -34,6 +37,7 @@ fn main() {
     let mut galileo_flag = false;
     let mut beidou_flag = false;
     let mut sbas_flag = false;
+    let mut l1c_flag = false;
     let mut all_flag = false;
     let mut single_ant: Option<usize> = None;
     let mut filter_phase_mad: Option<f64> = None;
@@ -68,6 +72,9 @@ fn main() {
             "--sbas" => {
                 sbas_flag = true;
             }
+            "--l1c" => {
+                l1c_flag = true;
+            }
             "--all" => {
                 all_flag = true;
             }
@@ -98,17 +105,18 @@ fn main() {
         i += 1;
     }
 
-    // --all implies all four constellations
+    // --all implies all five acquisition modes
     if all_flag {
         gps_flag = true;
         galileo_flag = true;
         beidou_flag = true;
         sbas_flag = true;
+        l1c_flag = true;
     }
 
     let file = file.unwrap_or_else(|| {
         eprintln!(
-            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
+            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
             args[0]
         );
         std::process::exit(1);
@@ -125,7 +133,7 @@ fn main() {
     eprintln!("antennas:    {n_ant}");
     eprintln!("sample rate: {sampling_freq} Hz");
 
-    let any_acq = gps_flag || galileo_flag || beidou_flag || sbas_flag;
+    let any_acq = gps_flag || galileo_flag || beidou_flag || sbas_flag || l1c_flag;
 
     if any_acq {
         // Validate --ant index once for all acquisition modes
@@ -141,6 +149,7 @@ fn main() {
             galileo: None,
             beidou: None,
             sbas: None,
+            l1c: None,
         };
 
         // --- GPS -----------------------------------------------------------
@@ -201,6 +210,18 @@ fn main() {
             ));
         }
 
+        // --- GPS L1C -------------------------------------------------------
+        if l1c_flag {
+            eprintln!("Running GPS L1C all-SV search ({} PRNs)...", l1c::L1C_NUM_SATS);
+            output.l1c = Some(l1c::acquire_all_l1c(
+                &obs,
+                l1c::L1C_IF,
+                l1c::L1C_SEARCH_BAND,
+                single_ant,
+                debug_flag,
+            ));
+        }
+
         // --- Apply MAD filters ---------------------------------------------
         if filter_phase_mad.is_some() || filter_freq_mad.is_some() {
             let mut filter_count = 0u64;
@@ -244,6 +265,16 @@ fn main() {
                     sb_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
                 }
                 filter_count += (before - sb_out.results.len()) as u64;
+            }
+            if let Some(ref mut l1c_out) = output.l1c {
+                let before = l1c_out.results.len();
+                if let Some(thresh) = filter_phase_mad {
+                    l1c_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
+                }
+                if let Some(thresh) = filter_freq_mad {
+                    l1c_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
+                }
+                filter_count += (before - l1c_out.results.len()) as u64;
             }
 
             if filter_count > 0 {
