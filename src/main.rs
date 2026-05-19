@@ -1,9 +1,21 @@
 mod acquisition;
+mod beidou;
 mod config;
 mod galileo;
 mod observation;
 
 use observation::Observation;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct CombinedOutput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gps: Option<acquisition::GpsAllAcquisitionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    galileo: Option<galileo::GalileoAllAcquisitionOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    beidou: Option<beidou::BeiDouAllAcquisitionOutput>,
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -13,6 +25,8 @@ fn main() {
     let mut antenna_j: Option<usize> = None;
     let mut gps_flag = false;
     let mut galileo_flag = false;
+    let mut beidou_flag = false;
+    let mut all_flag = false;
     let mut single_ant: Option<usize> = None;
 
     let mut i = 1;
@@ -36,6 +50,12 @@ fn main() {
             "--galileo" => {
                 galileo_flag = true;
             }
+            "--beidou" => {
+                beidou_flag = true;
+            }
+            "--all" => {
+                all_flag = true;
+            }
             "--ant" => {
                 i += 1;
                 single_ant = Some(args[i].parse().expect("invalid integer for --ant"));
@@ -48,9 +68,16 @@ fn main() {
         i += 1;
     }
 
+    // --all implies all three constellations
+    if all_flag {
+        gps_flag = true;
+        galileo_flag = true;
+        beidou_flag = true;
+    }
+
     let file = file.unwrap_or_else(|| {
         eprintln!(
-            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--gps] [--galileo] [--ant <idx>]",
+            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--ant <idx>]",
             args[0]
         );
         std::process::exit(1);
@@ -67,8 +94,10 @@ fn main() {
     eprintln!("antennas:    {n_ant}");
     eprintln!("sample rate: {sampling_freq} Hz");
 
-    // --- GPS all-PRN acquisition mode --------------------------------------
-    if gps_flag {
+    let any_acq = gps_flag || galileo_flag || beidou_flag;
+
+    if any_acq {
+        // Validate --ant index once for all acquisition modes
         if let Some(ant) = single_ant {
             if ant >= n_ant {
                 eprintln!("antenna index {ant} out of range (have {n_ant})");
@@ -76,51 +105,62 @@ fn main() {
             }
         }
 
-        eprintln!(
-            "Running GPS L1 C/A all-PRN search ({} PRNs)...",
-            acquisition::GPS_NUM_SATS
-        );
-        let result = acquisition::acquire_all_gps(
-            &obs,
-            acquisition::GPS_IF,
-            acquisition::GPS_SEARCH_BAND,
-            single_ant,
-        );
+        let mut output = CombinedOutput {
+            gps: None,
+            galileo: None,
+            beidou: None,
+        };
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).expect("JSON serialization failed")
-        );
-        return;
-    }
-
-    // --- Galileo all-SV acquisition mode -----------------------------------
-    if galileo_flag {
-        // Galileo E1 carrier: 1575.42 MHz; typical IF: 4.092 MHz
-        let galileo_if = 4.092e6;
-        let galileo_search_band = 6000.0;
-
-        if let Some(ant) = single_ant {
-            if ant >= n_ant {
-                eprintln!("antenna index {ant} out of range (have {n_ant})");
-                std::process::exit(1);
-            }
+        // --- GPS -----------------------------------------------------------
+        if gps_flag {
+            eprintln!(
+                "Running GPS L1 C/A all-PRN search ({} PRNs)...",
+                acquisition::GPS_NUM_SATS
+            );
+            output.gps = Some(acquisition::acquire_all_gps(
+                &obs,
+                acquisition::GPS_IF,
+                acquisition::GPS_SEARCH_BAND,
+                single_ant,
+            ));
         }
 
-        eprintln!("Running Galileo E1-C all-SV search (50 PRNs)...");
-        let result =
-            galileo::acquire_all_galileo(&obs, galileo_if, galileo_search_band, single_ant);
+        // --- Galileo -------------------------------------------------------
+        if galileo_flag {
+            let galileo_if = 4.092e6;
+            let galileo_search_band = 6000.0;
+            eprintln!("Running Galileo E1-C all-SV search (50 PRNs)...");
+            output.galileo = Some(galileo::acquire_all_galileo(
+                &obs,
+                galileo_if,
+                galileo_search_band,
+                single_ant,
+            ));
+        }
+
+        // --- BeiDou --------------------------------------------------------
+        if beidou_flag {
+            let beidou_if = 4.092e6;
+            let beidou_search_band = 6000.0;
+            eprintln!("Running BeiDou B1C all-SV search (63 PRNs)...");
+            output.beidou = Some(beidou::acquire_all_beidou(
+                &obs,
+                beidou_if,
+                beidou_search_band,
+                single_ant,
+            ));
+        }
 
         println!(
             "{}",
-            serde_json::to_string_pretty(&result).expect("JSON serialization failed")
+            serde_json::to_string_pretty(&output).expect("JSON serialization failed")
         );
         return;
     }
 
     // --- Correlation mode --------------------------------------------------
     let i = antenna_i.unwrap_or_else(|| {
-        eprintln!("missing --i <antenna_i> (or use --gps or --galileo)");
+        eprintln!("missing --i <antenna_i> (or use --gps, --galileo, --beidou, or --all)");
         std::process::exit(1);
     });
     let j = antenna_j.unwrap_or_else(|| {

@@ -1,23 +1,25 @@
-//! Galileo E1 Open Service pilot (E1-C) signal acquisition via FFT-based
+//! BeiDou B1C pilot (B1C_pilot) signal acquisition via FFT-based
 //! circular cross-correlation.
 //!
-//! The E1-C pilot channel uses 4092-chip primary memory codes (4 ms period
-//! at 1.023 Mcps), with a 25-chip secondary code overlay.
+//! The B1C pilot channel uses 10230-chip Weil primary codes (10 ms period
+//! at 1.023 Mcps), with BOC(1,1) modulation applied for acquisition.
 
-#[path = "galileo_codes.rs"]
-mod galileo_codes;
+#[path = "beidou_codes.rs"]
+mod beidou_codes;
 
 use crate::observation::Observation;
-use galileo_codes::{GALILEO_E1_C_CODES, GALILEO_E1_CHIPS, GALILEO_E1_NUM_SATS};
+use beidou_codes::{
+    b1c_code_resampled, BEIDOU_B1C_CODE_PERIOD, BEIDOU_B1C_NUM_SATS,
+};
 use num_complex::Complex;
 use rayon::prelude::*;
 use rustfft::FftPlanner;
 use serde::Serialize;
 use std::f64::consts::TAU;
 
-/// Result of a Galileo E1 signal acquisition attempt for a single satellite.
+/// Result of a BeiDou B1C signal acquisition attempt for a single satellite.
 #[derive(Debug, Clone, Serialize)]
-pub struct GalileoAcquisitionResult {
+pub struct BeiDouAcquisitionResult {
     pub prn: usize,
     /// Peak correlation magnitude (normalised).
     pub signal_strength: f64,
@@ -27,10 +29,10 @@ pub struct GalileoAcquisitionResult {
     pub frequency: f64,
 }
 
-/// Per-SV Galileo acquisition result with per-antenna measurements.
+/// Per-SV BeiDou acquisition result with per-antenna measurements.
 #[derive(Debug, Clone, Serialize)]
-pub struct GalileoPrnResult {
-    /// Constellation label, e.g. "GSAT03".
+pub struct BeiDouPrnResult {
+    /// Constellation label, e.g. "BEIDOU03".
     pub sv: String,
     /// Per-antenna signal strengths.
     pub strengths: Vec<f64>,
@@ -40,58 +42,10 @@ pub struct GalileoPrnResult {
     pub freqs: Vec<f64>,
 }
 
-/// Collection of acquisition results for all Galileo SVs, grouped by PRN.
+/// Collection of acquisition results for all BeiDou B1C SVs, grouped by PRN.
 #[derive(Debug, Clone, Serialize)]
-pub struct GalileoAllAcquisitionOutput {
-    pub results: Vec<GalileoPrnResult>,
-}
-
-// ---------------------------------------------------------------------------
-// Code generation
-// ---------------------------------------------------------------------------
-
-/// Decode a hex string (MSB-first per hex digit) into ±1 bipolar chips.
-///
-/// Each hex character encodes 4 chips.  `hex_char` 0 → chips [-1,-1,-1,-1],
-/// F → [+1,+1,+1,+1].
-fn hex_to_chips(hex: &str) -> [f64; GALILEO_E1_CHIPS] {
-    let mut chips = [0.0f64; GALILEO_E1_CHIPS];
-    for (i, ch) in hex.chars().enumerate() {
-        let val = ch.to_digit(16).expect("invalid hex char in Galileo code");
-        for bit in 0..4 {
-            let chip_idx = i * 4 + bit;
-            if chip_idx < GALILEO_E1_CHIPS {
-                chips[chip_idx] = if (val >> (3 - bit)) & 1 == 1 { 1.0 } else { -1.0 };
-            }
-        }
-    }
-    chips
-}
-
-/// Generate the 4092-chip Galileo E1-C primary code for a given PRN (1-based).
-///
-/// Returns a `[f64; GALILEO_E1_CHIPS]` array of ±1 values.
-pub fn generate_e1c_code(prn: usize) -> [f64; GALILEO_E1_CHIPS] {
-    assert!(
-        prn >= 1 && prn <= GALILEO_E1_NUM_SATS,
-        "Galileo PRN must be in 1..={GALILEO_E1_NUM_SATS}, got {prn}"
-    );
-    hex_to_chips(GALILEO_E1_C_CODES[prn - 1])
-}
-
-/// Resample the E1-C code to `samples_per_code` samples per 4-ms period,
-/// repeating for `epochs` full periods.
-pub fn e1c_code_resampled(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
-    let ca = generate_e1c_code(prn);
-    let samples_per_chip = samples_per_code / GALILEO_E1_CHIPS as f64;
-    let num_samples = (samples_per_code * epochs).floor() as usize;
-
-    (0..num_samples)
-        .map(|n| {
-            let idx = ((n as f64 / samples_per_chip).floor() as usize) % GALILEO_E1_CHIPS;
-            ca[idx]
-        })
-        .collect()
+pub struct BeiDouAllAcquisitionOutput {
+    pub results: Vec<BeiDouPrnResult>,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,17 +53,19 @@ pub fn e1c_code_resampled(samples_per_code: f64, prn: usize, epochs: f64) -> Vec
 // ---------------------------------------------------------------------------
 
 /// Perform parallel code-phase search (FFT circular cross-correlation) for a
-/// single Galileo E1-C PRN over a frequency search band.
-pub fn acquire_galileo_single(
+/// single BeiDou B1C PRN over a frequency search band.
+///
+/// Uses the BOC(1,1)-modulated pilot code as the local replica.
+pub fn acquire_beidou_single(
     x: &[f64],
     sampling_freq: f64,
     center_freq: f64,
     search_band: f64,
     prn: usize,
-) -> GalileoAcquisitionResult {
+) -> BeiDouAcquisitionResult {
     let sampling_period = 1.0 / sampling_freq;
-    // Galileo E1 code period is 4 ms
-    let samples_per_code_period = (sampling_freq * 0.004) as usize;
+    // BeiDou B1C code period is 10 ms
+    let samples_per_code_period = (sampling_freq * BEIDOU_B1C_CODE_PERIOD) as usize;
 
     let epochs_available = (x.len() as f64 / samples_per_code_period as f64).floor();
     // Use at least 1 full code period
@@ -132,7 +88,8 @@ pub fn acquire_galileo_single(
     let ifft = planner.plan_fft_inverse(total_samples);
 
     // --- Local code replica ------------------------------------------------
-    let code = e1c_code_resampled(samples_per_code_period as f64, prn, epochs);
+    // The BOC(1,1) code has 2 * BEIDOU_B1C_CHIPS = 20460 samples per period
+    let code = b1c_code_resampled(samples_per_code_period as f64, prn, epochs);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -194,7 +151,7 @@ pub fn acquire_galileo_single(
     let codephase_frac = codephase_in_samples as f64 / samples_per_code_period as f64;
     let frequency = fc[best_freq_idx] - center_freq;
 
-    GalileoAcquisitionResult {
+    BeiDouAcquisitionResult {
         prn,
         signal_strength: best_peak as f64,
         codephase_frac,
@@ -206,23 +163,23 @@ pub fn acquire_galileo_single(
 // All-SV search
 // ---------------------------------------------------------------------------
 
-/// Search for all 50 Galileo E1-C SVs across selected antennas.
+/// Search for all 63 BeiDou B1C SVs across selected antennas.
 ///
 /// If `ant_filter` is `Some(idx)`, only that antenna is used; otherwise all
 /// antennas are searched.  PRN processing is parallelised via rayon.
 ///
 /// For each PRN, per-antenna signal strengths, code-phase offsets, and
 /// Doppler frequency offsets are collected.
-pub fn acquire_all_galileo(
+pub fn acquire_all_beidou(
     obs: &Observation,
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
-) -> GalileoAllAcquisitionOutput {
+) -> BeiDouAllAcquisitionOutput {
     let sampling_freq = obs.get_sampling_rate();
     let n_ant = obs.config.num_antenna();
-    let num_samples_per_code_period = (sampling_freq * 0.004) as usize;
-    // Use 8 ms of data (2 code periods) per antenna
+    let num_samples_per_code_period = (sampling_freq * BEIDOU_B1C_CODE_PERIOD) as usize;
+    // Use 20 ms of data (2 code periods) per antenna
     let num_samples = 2 * num_samples_per_code_period;
 
     // Which antennas to search
@@ -244,7 +201,7 @@ pub fn acquire_all_galileo(
         .collect();
 
     // Parallel PRN search ----------------------------------------------------
-    let mut results: Vec<GalileoPrnResult> = (1..=GALILEO_E1_NUM_SATS)
+    let mut results: Vec<BeiDouPrnResult> = (1..=BEIDOU_B1C_NUM_SATS)
         .into_par_iter()
         .map(|prn| {
             let mut strengths = Vec::with_capacity(ant_indices.len());
@@ -252,16 +209,11 @@ pub fn acquire_all_galileo(
             let mut freqs = Vec::with_capacity(ant_indices.len());
 
             for (i, raw) in ant_data.iter().enumerate() {
-                let result = acquire_galileo_single(
-                    raw,
-                    sampling_freq,
-                    center_freq,
-                    search_band,
-                    prn,
-                );
+                let result =
+                    acquire_beidou_single(raw, sampling_freq, center_freq, search_band, prn);
 
                 eprintln!(
-                    "  galileo PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
+                    "  beidou PRN {:2} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
                     prn,
                     ant_indices[i],
                     result.signal_strength,
@@ -274,8 +226,8 @@ pub fn acquire_all_galileo(
                 freqs.push(result.frequency);
             }
 
-            GalileoPrnResult {
-                sv: format!("GSAT{prn:02}"),
+            BeiDouPrnResult {
+                sv: format!("BEIDOU{prn:02}"),
                 strengths,
                 phases,
                 freqs,
@@ -283,41 +235,47 @@ pub fn acquire_all_galileo(
         })
         .collect();
 
+    // Sort by SV label to maintain ordering
     results.sort_by_key(|r| r.sv.clone());
 
-    GalileoAllAcquisitionOutput { results }
+    BeiDouAllAcquisitionOutput { results }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use beidou_codes::{generate_b1c_pilot_code, BEIDOU_B1C_CHIPS};
 
     #[test]
-    fn test_generate_e1c_code_length() {
-        let code = generate_e1c_code(1);
-        assert_eq!(code.len(), GALILEO_E1_CHIPS);
+    fn test_generate_b1c_pilot_code_length() {
+        let code = generate_b1c_pilot_code(1);
+        assert_eq!(code.len(), BEIDOU_B1C_CHIPS * 2);
     }
 
     #[test]
-    fn test_generate_e1c_code_bipolar() {
-        let code = generate_e1c_code(5);
+    fn test_generate_b1c_pilot_code_bipolar() {
+        let code = generate_b1c_pilot_code(5);
         for &v in &code {
             assert!(v == 1.0 || v == -1.0, "unexpected value {v}");
         }
     }
 
     #[test]
-    fn test_e1c_code_resampled_length() {
-        let samples_per_code = 4092.0;
-        let code = e1c_code_resampled(samples_per_code, 1, 2.0);
-        assert_eq!(code.len(), 8184);
+    fn test_b1c_code_resampled_length() {
+        let samples_per_code = (BEIDOU_B1C_CHIPS * 2) as f64;
+        let code = b1c_code_resampled(samples_per_code, 1, 2.0);
+        assert_eq!(code.len(), BEIDOU_B1C_CHIPS * 4); // 2 periods of BOC code
     }
 
     #[test]
     fn test_all_prns_generate() {
-        for prn in 1..=GALILEO_E1_NUM_SATS {
-            let code = generate_e1c_code(prn);
-            assert_eq!(code.len(), GALILEO_E1_CHIPS, "PRN {prn} wrong length");
+        for prn in 1..=BEIDOU_B1C_NUM_SATS {
+            let code = generate_b1c_pilot_code(prn);
+            assert_eq!(
+                code.len(),
+                BEIDOU_B1C_CHIPS * 2,
+                "PRN {prn} wrong pilot code length"
+            );
         }
     }
 }

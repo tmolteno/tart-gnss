@@ -22,10 +22,11 @@ pub struct AcquisitionResult {
     pub frequency: f64,
 }
 
-/// Per-PRN GPS acquisition result with per-antenna measurements.
+/// Per-SV GPS acquisition result with per-antenna measurements.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GpsPrnResult {
-    pub prn: usize,
+    /// Constellation label, e.g. "GPS03".
+    pub sv: String,
     /// Per-antenna signal strengths.
     pub strengths: Vec<f64>,
     /// Per-antenna code-phase offsets (fraction of a millisecond).
@@ -294,7 +295,7 @@ pub fn acquire_all_gps(
             }
 
             GpsPrnResult {
-                prn,
+                sv: format!("GPS{prn:02}"),
                 strengths,
                 phases,
                 freqs,
@@ -302,7 +303,7 @@ pub fn acquire_all_gps(
         })
         .collect();
 
-    results.sort_by_key(|r| r.prn);
+    results.sort_by_key(|r| r.sv.clone());
 
     GpsAllAcquisitionOutput { results }
 }
