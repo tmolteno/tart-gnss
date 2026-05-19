@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "tart-gnss-acquire"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "hdf5-reader",
