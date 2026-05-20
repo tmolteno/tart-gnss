@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
 // SPDX-License-Identifier: GPL-3.0
 
+mod acr;
 mod acquisition;
 mod beidou;
 mod config;
@@ -44,6 +45,7 @@ fn main() {
     let mut filter_freq_mad: Option<f64> = None;
     let mut output_file: Option<String> = None;
     let mut debug_flag = false;
+    let mut cn0_flag = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -97,6 +99,9 @@ fn main() {
             "--debug" => {
                 debug_flag = true;
             }
+            "--cn0" => {
+                cn0_flag = true;
+            }
             other => {
                 eprintln!("unknown argument: {other}");
                 std::process::exit(1);
@@ -116,7 +121,7 @@ fn main() {
 
     let file = file.unwrap_or_else(|| {
         eprintln!(
-            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
+            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--cn0] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
             args[0]
         );
         std::process::exit(1);
@@ -164,6 +169,7 @@ fn main() {
                 acquisition::GPS_SEARCH_BAND,
                 single_ant,
                 debug_flag,
+                cn0_flag,
             ));
         }
 
@@ -178,6 +184,7 @@ fn main() {
                 galileo_search_band,
                 single_ant,
                 debug_flag,
+                cn0_flag,
             ));
         }
 
@@ -192,6 +199,7 @@ fn main() {
                 beidou_search_band,
                 single_ant,
                 debug_flag,
+                cn0_flag,
             ));
         }
 
@@ -207,6 +215,7 @@ fn main() {
                 sbas::SBAS_SEARCH_BAND,
                 single_ant,
                 debug_flag,
+                cn0_flag,
             ));
         }
 
@@ -219,6 +228,7 @@ fn main() {
                 l1c::L1C_SEARCH_BAND,
                 single_ant,
                 debug_flag,
+                cn0_flag,
             ));
         }
 

@@ -35,6 +35,9 @@ pub struct L1CAcquisitionResult {
     pub prn: usize,
     /// Peak correlation magnitude (normalised).
     pub signal_strength: f64,
+    /// Second-highest correlation magnitude at the same frequency,
+    /// at least 1 chip away from the peak (for ACR C/N0 estimation).
+    pub second_peak: f64,
     /// Code-phase offset in fractions of a code period [0, 1).
     pub codephase_frac: f64,
     /// Doppler frequency offset in Hz (relative to centre frequency).
@@ -52,6 +55,9 @@ pub struct L1CPrnResult {
     pub phases: Vec<f64>,
     /// Per-antenna Doppler frequency offsets (Hz).
     pub freqs: Vec<f64>,
+    /// ACR C/N0 estimate per antenna (dB-Hz), if available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cn0_acr: Option<Vec<f64>>,
     /// Median phase across antennas (only when >1 antenna).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase_median: Option<f64>,
@@ -136,6 +142,7 @@ pub fn acquire_l1c_single(
     let mut best_peak: f32 = f32::NEG_INFINITY;
     let mut best_freq_idx: usize = 0;
     let mut best_codephase: usize = 0;
+    let mut best_corr: Vec<f32> = Vec::new();
 
     let signal_f32: Vec<f32> = x[..num_samples].iter().map(|&v| v as f32).collect();
 
@@ -170,7 +177,29 @@ pub fn acquire_l1c_single(
             best_peak = peak_val;
             best_freq_idx = fi;
             best_codephase = peak_idx;
+            best_corr = corr;
         }
+    }
+
+    // --- Find second peak (>1 chip from main peak) -------------------------
+    let chip_width = (sampling_freq / 1.023e6).ceil() as usize;
+    let main_codephase = best_codephase % samples_per_code_period;
+    let mut second_peak: f32 = f32::NEG_INFINITY;
+
+    for (idx, &val) in best_corr.iter().enumerate() {
+        let idx_cp = idx % samples_per_code_period;
+        let dist = if idx_cp >= main_codephase {
+            (idx_cp - main_codephase).min(samples_per_code_period - idx_cp + main_codephase)
+        } else {
+            (main_codephase - idx_cp).min(samples_per_code_period - main_codephase + idx_cp)
+        };
+        if dist > chip_width && val > second_peak {
+            second_peak = val;
+        }
+    }
+
+    if second_peak <= 0.0 {
+        second_peak = 1e-6;
     }
 
     let codephase_in_samples = best_codephase % samples_per_code_period;
@@ -180,6 +209,7 @@ pub fn acquire_l1c_single(
     L1CAcquisitionResult {
         prn,
         signal_strength: best_peak as f64,
+        second_peak: second_peak as f64,
         codephase_frac,
         frequency,
     }
@@ -202,6 +232,7 @@ pub fn acquire_all_l1c(
     search_band: f64,
     ant_filter: Option<usize>,
     debug: bool,
+    cn0: bool,
 ) -> L1CAllAcquisitionOutput {
     let sampling_freq = obs.get_sampling_rate();
     let n_ant = obs.config.num_antenna();
@@ -235,6 +266,11 @@ pub fn acquire_all_l1c(
         .into_par_iter()
         .map(|prn| {
             let mut strengths = Vec::with_capacity(ant_indices.len());
+            let mut second_peaks: Vec<f64> = if cn0 {
+                Vec::with_capacity(ant_indices.len())
+            } else {
+                Vec::new()
+            };
             let mut phases = Vec::with_capacity(ant_indices.len());
             let mut freqs = Vec::with_capacity(ant_indices.len());
 
@@ -254,9 +290,31 @@ pub fn acquire_all_l1c(
                 }
 
                 strengths.push(result.signal_strength);
+                if cn0 {
+                    second_peaks.push(result.second_peak);
+                }
                 phases.push(result.codephase_frac);
                 freqs.push(result.frequency);
             }
+
+            // Compute ACR C/N0 per antenna
+            let cn0_acr: Option<Vec<f64>> = if cn0 {
+                let cn0s: Vec<f64> = strengths
+                    .iter()
+                    .zip(second_peaks.iter())
+                    .filter_map(|(&v_m, &v_s)| {
+                        if v_s > 0.0 && v_m > v_s {
+                            let r_a = (v_m / v_s).powi(2);
+                            crate::acr::estimate_cn0(r_a)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if cn0s.is_empty() { None } else { Some(cn0s) }
+            } else {
+                None
+            };
 
             let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!("  l1c [{n}/{total}]");
@@ -283,6 +341,7 @@ pub fn acquire_all_l1c(
                 strengths,
                 phases,
                 freqs,
+                cn0_acr,
                 phase_median,
                 phase_mad,
                 freq_median,

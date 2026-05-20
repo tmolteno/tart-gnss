@@ -28,6 +28,7 @@ impl Observation {
     // ---------------------------------------------------------------------------
 
     /// Create a new `Observation` directly from its components.
+    #[allow(dead_code)]
     pub fn new(timestamp: DateTime<Utc>, config: Config, data: Vec<Vec<u8>>) -> Self {
         Self {
             timestamp,
@@ -113,6 +114,7 @@ impl Observation {
     ///
     /// Maps 0→0 and 1→1, averages, then scales by 2*x-1 so the final result
     /// is in [-1, 1].
+    #[allow(dead_code)]
     pub fn get_means(&self) -> Vec<f64> {
         self.data
             .iter()
