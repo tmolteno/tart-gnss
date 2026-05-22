@@ -1,5 +1,15 @@
 # Changes
 
+## v0.2.0
+
+### Added
+
+- **`--prn` flag** — restricts acquisition to specific PRN/SV numbers
+  (comma-separated list).  Works across all constellation modes: GPS L1 C/A,
+  Galileo E1-C, BeiDou B1C, SBAS, QZSS, and GPS L1C.  Each `acquire_all_*`
+  function now takes an optional `prn_filter` parameter that feeds
+  `into_par_iter` directly, avoiding work for unlisted PRNs.
+
 ## v0.1.7
 
 ### Added

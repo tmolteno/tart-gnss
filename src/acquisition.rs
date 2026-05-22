@@ -309,6 +309,7 @@ pub fn acquire_all_gps(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
 ) -> GpsAllAcquisitionOutput {
@@ -341,10 +342,15 @@ pub fn acquire_all_gps(
         })
         .collect();
 
-    let total = GPS_NUM_SATS;
+    let prn_list: Vec<usize> = if let Some(filter) = prn_filter {
+        filter.to_vec()
+    } else {
+        (1..=GPS_NUM_SATS).collect()
+    };
+    let total = prn_list.len();
     let counter = AtomicUsize::new(0);
 
-    let mut results: Vec<GpsPrnResult> = (1..=GPS_NUM_SATS)
+    let mut results: Vec<GpsPrnResult> = prn_list
         .into_par_iter()
         .map(|prn| {
             let mut strengths = Vec::with_capacity(ant_indices.len());

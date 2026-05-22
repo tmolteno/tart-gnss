@@ -267,6 +267,7 @@ pub fn acquire_all_qzss(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
 ) -> QzssAllAcquisitionOutput {
@@ -297,8 +298,12 @@ pub fn acquire_all_qzss(
         })
         .collect();
 
-    let prn_range: Vec<usize> = (QZSS_PRN_BASE..QZSS_PRN_BASE + QZSS_NUM_SATS).collect();
-    let total = QZSS_NUM_SATS;
+    let prn_range: Vec<usize> = if let Some(filter) = prn_filter {
+        filter.to_vec()
+    } else {
+        (QZSS_PRN_BASE..QZSS_PRN_BASE + QZSS_NUM_SATS).collect()
+    };
+    let total = prn_range.len();
     let counter = AtomicUsize::new(0);
 
     let mut results: Vec<QzssPrnResult> = prn_range

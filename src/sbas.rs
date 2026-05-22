@@ -265,6 +265,7 @@ pub fn acquire_all_sbas(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
 ) -> SbasAllAcquisitionOutput {
@@ -297,8 +298,12 @@ pub fn acquire_all_sbas(
         })
         .collect();
 
-    let prn_range: Vec<usize> = (SBAS_PRN_BASE..SBAS_PRN_BASE + SBAS_NUM_SATS).collect();
-    let total = SBAS_NUM_SATS;
+    let prn_range: Vec<usize> = if let Some(filter) = prn_filter {
+        filter.to_vec()
+    } else {
+        (SBAS_PRN_BASE..SBAS_PRN_BASE + SBAS_NUM_SATS).collect()
+    };
+    let total = prn_range.len();
     let counter = AtomicUsize::new(0);
 
     let mut results: Vec<SbasPrnResult> = prn_range

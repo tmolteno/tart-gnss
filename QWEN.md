@@ -38,6 +38,12 @@ cargo run -- --file data/observation.hdf --l1c
 # All constellations
 cargo run -- --file data/observation.hdf --all
 
+# Single PRN
+cargo run -- --file data/observation.hdf --gps --prn 3
+
+# Multiple PRNs
+cargo run -- --file data/observation.hdf --galileo --prn 1,5,12
+
 # Single antenna only
 cargo run -- --file data/observation.hdf --gps --ant 0
 
@@ -57,7 +63,11 @@ Arguments:
 - `--qzss`                  — QZSS L1 C/A all-PRN (184–206) search
 - `--l1c`                   — GPS L1C all-SV pilot (1–63) search
 - `--all`                   — run all constellations
+- `--prn <a,b,...>`         — restrict search to specific PRN numbers (comma-separated)
 - `--ant <idx>`             — restrict acquisition to a single antenna
+- `--cn0`                   — enable ACR C/N0 estimation per antenna
+- `--output <path>`         — write JSON output to file instead of stdout
+- `--debug`                 — print per-PRN diagnostics to stderr
 - `--filter-phase-mad <x>`  — drop PRNs with phase MAD > x (multi-antenna only)
 - `--filter-freq-mad <x>`   — drop PRNs with frequency MAD > x (multi-antenna only)
 - `--i <idx>`               — first antenna index (correlation mode)

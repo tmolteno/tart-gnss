@@ -227,6 +227,7 @@ pub fn acquire_all_beidou(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
 ) -> BeiDouAllAcquisitionOutput {
@@ -260,10 +261,15 @@ pub fn acquire_all_beidou(
         .collect();
 
     // Parallel PRN search ----------------------------------------------------
-    let total = BEIDOU_B1C_NUM_SATS;
+    let prn_list: Vec<usize> = if let Some(filter) = prn_filter {
+        filter.to_vec()
+    } else {
+        (1..=BEIDOU_B1C_NUM_SATS).collect()
+    };
+    let total = prn_list.len();
     let counter = AtomicUsize::new(0);
 
-    let mut results: Vec<BeiDouPrnResult> = (1..=BEIDOU_B1C_NUM_SATS)
+    let mut results: Vec<BeiDouPrnResult> = prn_list
         .into_par_iter()
         .map(|prn| {
             let mut strengths = Vec::with_capacity(ant_indices.len());

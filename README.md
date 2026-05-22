@@ -30,6 +30,12 @@ tart-gnss-acquire --file data/observation.hdf --sbas
 # QZSS only
 tart-gnss-acquire --file data/observation.hdf --qzss
 
+# Single PRN
+tart-gnss-acquire --file data/observation.hdf --gps --prn 3
+
+# Multiple PRNs
+tart-gnss-acquire --file data/observation.hdf --galileo --prn 1,5,12
+
 # Single antenna
 tart-gnss-acquire --file data/observation.hdf --galileo --ant 0
 
@@ -57,6 +63,7 @@ tart-gnss-acquire --file data/observation.hdf --i 0 --j 1
 | `--qzss`                  | QZSS L1 C/A all-PRN search (184–206)                |
 | `--l1c`                   | GPS L1C all-SV pilot search (1–63)                  |
 | `--all`                   | Run all constellations                              |
+| `--prn A,B,...`           | Restrict search to specific PRN numbers             |
 | `--ant IDX`               | Restrict acquisition to a single antenna            |
 | `--cn0`                   | Enable ACR C/N0 estimation per antenna              |
 | `--output PATH`           | Write JSON output to file instead of stdout         |

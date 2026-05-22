@@ -272,6 +272,7 @@ pub fn acquire_all_galileo(
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
+    prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
 ) -> GalileoAllAcquisitionOutput {
@@ -305,10 +306,15 @@ pub fn acquire_all_galileo(
         .collect();
 
     // Parallel PRN search ----------------------------------------------------
-    let total = GALILEO_E1_NUM_SATS;
+    let prn_list: Vec<usize> = if let Some(filter) = prn_filter {
+        filter.to_vec()
+    } else {
+        (1..=GALILEO_E1_NUM_SATS).collect()
+    };
+    let total = prn_list.len();
     let counter = AtomicUsize::new(0);
 
-    let mut results: Vec<GalileoPrnResult> = (1..=GALILEO_E1_NUM_SATS)
+    let mut results: Vec<GalileoPrnResult> = prn_list
         .into_par_iter()
         .map(|prn| {
             let mut strengths = Vec::with_capacity(ant_indices.len());

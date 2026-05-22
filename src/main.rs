@@ -50,6 +50,7 @@ fn main() {
     let mut output_file: Option<String> = None;
     let mut debug_flag = false;
     let mut cn0_flag = false;
+    let mut prn_filter: Option<Vec<usize>> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -109,6 +110,15 @@ fn main() {
             "--cn0" => {
                 cn0_flag = true;
             }
+            "--prn" => {
+                i += 1;
+                prn_filter = Some(
+                    args[i]
+                        .split(',')
+                        .map(|s| s.trim().parse().expect("invalid integer in --prn list"))
+                        .collect(),
+                );
+            }
             other => {
                 eprintln!("unknown argument: {other}");
                 std::process::exit(1);
@@ -129,7 +139,7 @@ fn main() {
 
     let file = file.unwrap_or_else(|| {
         eprintln!(
-            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
+            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
             args[0]
         );
         std::process::exit(1);
@@ -168,15 +178,17 @@ fn main() {
 
         // --- GPS -----------------------------------------------------------
         if gps_flag {
+            let n_prns = prn_filter.as_ref().map_or(acquisition::GPS_NUM_SATS, |f| f.len());
             eprintln!(
-                "Running GPS L1 C/A all-PRN search ({} PRNs)...",
-                acquisition::GPS_NUM_SATS
+                "Running GPS L1 C/A search ({} PRNs)...",
+                n_prns
             );
             output.gps = Some(acquisition::acquire_all_gps(
                 &obs,
                 acquisition::GPS_IF,
                 acquisition::GPS_SEARCH_BAND,
                 single_ant,
+                prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
             ));
@@ -186,12 +198,14 @@ fn main() {
         if galileo_flag {
             let galileo_if = 4.092e6;
             let galileo_search_band = 6000.0;
-            eprintln!("Running Galileo E1-C all-SV search (50 PRNs)...");
+            let n_prns = prn_filter.as_ref().map_or(50, |f| f.len());
+            eprintln!("Running Galileo E1-C search ({} PRNs)...", n_prns);
             output.galileo = Some(galileo::acquire_all_galileo(
                 &obs,
                 galileo_if,
                 galileo_search_band,
                 single_ant,
+                prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
             ));
@@ -201,12 +215,14 @@ fn main() {
         if beidou_flag {
             let beidou_if = 4.092e6;
             let beidou_search_band = 6000.0;
-            eprintln!("Running BeiDou B1C all-SV search (63 PRNs)...");
+            let n_prns = prn_filter.as_ref().map_or(63, |f| f.len());
+            eprintln!("Running BeiDou B1C search ({} PRNs)...", n_prns);
             output.beidou = Some(beidou::acquire_all_beidou(
                 &obs,
                 beidou_if,
                 beidou_search_band,
                 single_ant,
+                prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
             ));
@@ -214,15 +230,17 @@ fn main() {
 
         // --- SBAS ----------------------------------------------------------
         if sbas_flag {
+            let n_prns = prn_filter.as_ref().map_or(sbas::SBAS_NUM_SATS, |f| f.len());
             eprintln!(
-                "Running SBAS L1 C/A all-PRN search ({} PRNs)...",
-                sbas::SBAS_NUM_SATS
+                "Running SBAS L1 C/A search ({} PRNs)...",
+                n_prns
             );
             output.sbas = Some(sbas::acquire_all_sbas(
                 &obs,
                 sbas::SBAS_IF,
                 sbas::SBAS_SEARCH_BAND,
                 single_ant,
+                prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
             ));
@@ -230,12 +248,14 @@ fn main() {
 
         // --- GPS L1C -------------------------------------------------------
         if l1c_flag {
-            eprintln!("Running GPS L1C all-SV search ({} PRNs)...", l1c::L1C_NUM_SATS);
+            let n_prns = prn_filter.as_ref().map_or(l1c::L1C_NUM_SATS, |f| f.len());
+            eprintln!("Running GPS L1C search ({} PRNs)...", n_prns);
             output.l1c = Some(l1c::acquire_all_l1c(
                 &obs,
                 l1c::L1C_IF,
                 l1c::L1C_SEARCH_BAND,
                 single_ant,
+                prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
             ));
@@ -243,15 +263,17 @@ fn main() {
 
         // --- QZSS ----------------------------------------------------------
         if qzss_flag {
+            let n_prns = prn_filter.as_ref().map_or(qzss::QZSS_NUM_SATS, |f| f.len());
             eprintln!(
-                "Running QZSS L1 C/A all-PRN search ({} PRNs)...",
-                qzss::QZSS_NUM_SATS
+                "Running QZSS L1 C/A search ({} PRNs)...",
+                n_prns
             );
             output.qzss = Some(qzss::acquire_all_qzss(
                 &obs,
                 qzss::QZSS_IF,
                 qzss::QZSS_SEARCH_BAND,
                 single_ant,
+                prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
             ));
