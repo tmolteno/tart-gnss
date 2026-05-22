@@ -1,8 +1,9 @@
 # QWEN.md — tart-gnss-acquire
 
-Rust CLI for GNSS signal acquisition (GPS L1 C/A, Galileo E1-C, BeiDou B1C,
-SBAS L1 C/A) and antenna cross-correlation using data from the TART radio
-telescope.  Ported from the Python `tart.tart.operation` module.
+Rust CLI for GNSS signal acquisition (GPS L1 C/A, GPS L1C, Galileo E1-C,
+BeiDou B1C, SBAS L1 C/A, QZSS L1 C/A) and antenna cross-correlation using
+data from the TART radio telescope.  Ported from the Python
+`tart.tart.operation` module.
 
 ## Build & test
 
@@ -28,7 +29,13 @@ cargo run -- --file data/observation.hdf --beidou
 # SBAS L1 C/A all-PRN search
 cargo run -- --file data/observation.hdf --sbas
 
-# All four constellations
+# QZSS L1 C/A all-PRN search
+cargo run -- --file data/observation.hdf --qzss
+
+# GPS L1C all-SV pilot search
+cargo run -- --file data/observation.hdf --l1c
+
+# All constellations
 cargo run -- --file data/observation.hdf --all
 
 # Single antenna only
@@ -46,8 +53,10 @@ Arguments:
 - `--gps`                   — GPS L1 C/A all-PRN (1–38) search
 - `--galileo`               — Galileo E1-C all-SV pilot (1–50) search
 - `--beidou`                — BeiDou B1C all-SV pilot (1–63) search
-- `--sbas`                  — SBAS L1 C/A all-PRN (120–138) search
-- `--all`                   — run all four constellations
+- `--sbas`                  — SBAS L1 C/A all-PRN (120–158) search
+- `--qzss`                  — QZSS L1 C/A all-PRN (184–206) search
+- `--l1c`                   — GPS L1C all-SV pilot (1–63) search
+- `--all`                   — run all constellations
 - `--ant <idx>`             — restrict acquisition to a single antenna
 - `--filter-phase-mad <x>`  — drop PRNs with phase MAD > x (multi-antenna only)
 - `--filter-freq-mad <x>`   — drop PRNs with frequency MAD > x (multi-antenna only)
@@ -66,8 +75,11 @@ Arguments:
 | `src/galileo_codes.rs`| Galileo E1-C primary codes (50 PRNs, hex-encoded)     |
 | `src/beidou.rs`       | BeiDou B1C pilot acquisition (10230-chip Weil codes)  |
 | `src/beidou_codes.rs` | BeiDou B1C Legendre/Weil code generation              |
-| `src/sbas.rs`         | SBAS L1 C/A acquisition (PRN 120–138, gold codes)     |
-| `src/stats.rs`        | `median()` and `mad()` robust statistics              |
+| `src/l1c.rs`          | GPS L1C pilot acquisition (10230-chip Weil codes)      |
+| `src/l1c_codes.rs`    | GPS L1C Legendre/Weil code generation                  |
+| `src/sbas.rs`         | SBAS L1 C/A acquisition (PRN 120–158, gold codes)      |
+| `src/qzss.rs`         | QZSS L1 C/A acquisition (PRN 184–206, gold codes)      |
+| `src/stats.rs`        | `median()` and `mad()` robust statistics               |
 
 ## Key dependencies
 

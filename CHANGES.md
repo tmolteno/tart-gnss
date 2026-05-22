@@ -1,5 +1,35 @@
 # Changes
 
+## v0.1.7
+
+### Added
+
+- **QZSS L1 C/A acquisition** — new `--qzss` flag for QZSS (Quasi-Zenith
+  Satellite System) L1 C/A all-PRN search.  Covers PRNs 184–206 (23 PRNs)
+  with G2 delay values from the L1 C/A PRN Code Assignments (Jan 2026).
+  Reuses the existing GPS C/A gold-code generator (FFT circular
+  cross-correlation).  The `--all` flag now includes QZSS alongside GPS,
+  Galileo, BeiDou, SBAS, and L1C.
+- **`--cn0` flag** — documented in README.  Enables per-antenna ACR C/N0
+  estimation (added in v0.1.6 but not previously listed in the README
+  flag table).
+
+### Changed
+
+- **SBAS PRN range extended** — SBAS now searches PRNs 120–158 (was
+  120–138).  The 20 additional PRNs include operational satellites from
+  MSAS, SDCM, KASS, BDSBAS, Pak-SBAS, ASECNA, A-SBAS, EGNOS, and UK SBAS.
+  G2 delay values sourced from the Jan 2026 PRN Code Assignments document.
+- **SBAS first-10-chips test** — added cross-validation of generated C/A
+  codes for all 39 SBAS PRNs against the reference octal values from the
+  PRN assignment document.
+- **README** — updated with all CLI flags (`--l1c`, `--qzss`, `--cn0`,
+  `--output`, `--debug`), expanded flag table, and current PRN ranges.
+
+### Fixed
+
+- **README SBAS range** — corrected from 120–138 to 120–158.
+
 ## v0.1.6
 
 ### Added

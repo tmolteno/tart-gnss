@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/tart-gnss-acquire)](https://crates.io/crates/tart-gnss-acquire)
 
 GNSS signal acquisition for the TART radio telescope — GPS L1 C/A, GPS L1C,
-Galileo E1-C, BeiDou B1C, and SBAS.
+Galileo E1-C, BeiDou B1C, SBAS, and QZSS.
 
 ## Quick start
 
@@ -15,7 +15,7 @@ tart-gnss-acquire --file observation.hdf --all
 ## Usage
 
 ```bash
-# All five constellations
+# All constellations
 tart-gnss-acquire --file data/observation.hdf --all
 
 # GPS L1 C/A only
@@ -27,8 +27,17 @@ tart-gnss-acquire --file data/observation.hdf --l1c
 # SBAS only
 tart-gnss-acquire --file data/observation.hdf --sbas
 
+# QZSS only
+tart-gnss-acquire --file data/observation.hdf --qzss
+
 # Single antenna
 tart-gnss-acquire --file data/observation.hdf --galileo --ant 0
+
+# With C/N0 estimation
+tart-gnss-acquire --file data/observation.hdf --gps --cn0
+
+# Save output to file
+tart-gnss-acquire --file data/observation.hdf --all --output results.json
 
 # Filter out results with high inter-antenna dispersion
 tart-gnss-acquire --file data/observation.hdf --all \
@@ -44,10 +53,14 @@ tart-gnss-acquire --file data/observation.hdf --i 0 --j 1
 | `--gps`                   | GPS L1 C/A all-PRN search (1–38)                    |
 | `--galileo`               | Galileo E1-C all-SV pilot search (1–50)             |
 | `--beidou`                | BeiDou B1C all-SV pilot search (1–63)               |
-| `--sbas`                  | SBAS L1 C/A all-PRN search (120–138)                |
+| `--sbas`                  | SBAS L1 C/A all-PRN search (120–158)                |
+| `--qzss`                  | QZSS L1 C/A all-PRN search (184–206)                |
 | `--l1c`                   | GPS L1C all-SV pilot search (1–63)                  |
-| `--all`                   | Run all five constellations                         |
+| `--all`                   | Run all constellations                              |
 | `--ant IDX`               | Restrict acquisition to a single antenna            |
+| `--cn0`                   | Enable ACR C/N0 estimation per antenna              |
+| `--output PATH`           | Write JSON output to file instead of stdout         |
+| `--debug`                 | Print per-PRN, per-antenna diagnostics to stderr    |
 | `--filter-phase-mad X`    | Drop PRNs with phase MAD > X (multi-antenna only)   |
 | `--filter-freq-mad X`     | Drop PRNs with frequency MAD > X (multi-antenna only) |
 | `--i IDX`                 | First antenna index (correlation mode)              |
@@ -63,8 +76,9 @@ contains one key per requested constellation:
 | `gps`      | GPS L1 C/A    | 1–38      | `GPS01`         |
 | `galileo`  | Galileo E1-C  | 1–50      | `GSAT01`        |
 | `beidou`   | BeiDou B1C    | 1–63      | `BEIDOU01`      |
-| `sbas`     | SBAS L1 C/A   | 120–138   | `SBAS120`       |
+| `sbas`     | SBAS L1 C/A   | 120–158   | `SBAS120`       |
 | `l1c`      | GPS L1C       | 1–63      | `GPSL1C01`      |
+| `qzss`     | QZSS L1 C/A   | 184–206   | `QZSS184`       |
 
 Each constellation value is an object with a `results` array.  Each element
 in the array describes one satellite/PRN:
@@ -92,10 +106,11 @@ in the array describes one satellite/PRN:
 
 | Field            | Type          | Description                                              |
 |------------------|---------------|----------------------------------------------------------|
-| `sv`             | string        | Constellation label (e.g. `GPS03`, `SBAS120`)           |
+| `sv`             | string        | Constellation label (e.g. `GPS03`, `QZSS195`)           |
 | `strengths`      | array[number] | Per-antenna peak correlation magnitudes                  |
 | `phases`         | array[number] | Per-antenna code-phase offsets (fraction of code period) |
 | `freqs`          | array[number] | Per-antenna Doppler frequency offsets (Hz)               |
+| `cn0_acr`        | array[number]?| Per-antenna ACR C/N0 estimates in dB-Hz (only with `--cn0`) |
 | `phase_median`   | number?       | Median phase across antennas (only when >1 antenna)      |
 | `phase_mad`      | number?       | Median absolute deviation of phase (multi-antenna only)  |
 | `freq_median`    | number?       | Median frequency across antennas (multi-antenna only)    |

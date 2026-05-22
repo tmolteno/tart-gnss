@@ -1,12 +1,12 @@
 // Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
 // SPDX-License-Identifier: GPL-3.0
 
-//! SBAS (Satellite-Based Augmentation System) L1 C/A signal acquisition
+//! QZSS (Quasi-Zenith Satellite System) L1 C/A signal acquisition
 //! via FFT-based circular cross-correlation.
 //!
-//! SBAS satellites transmit GPS L1 C/A codes with PRN numbers 120–158
-//! (NMEA SV IDs 33–71).  The gold-code chip generation is reused from
-//! the GPS acquisition module.
+//! QZSS satellites transmit GPS-compatible L1 C/A codes with PRN numbers
+//! 184–206.  The gold-code chip generation is reused from the GPS
+//! acquisition module.
 
 use num_complex::Complex;
 use rayon::prelude::*;
@@ -17,39 +17,39 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::acquisition::{self, generate_ca_code_from_delay, gold_code_from_ca};
 use crate::observation::Observation;
 
-/// Number of SBAS PRNs (120..=158).
-pub const SBAS_NUM_SATS: usize = 39;
+/// Number of QZSS PRNs (184..=206).
+pub const QZSS_NUM_SATS: usize = 23;
 
-/// SBAS L1 intermediate frequency in Hz (same as GPS L1 at the TART IF).
-pub const SBAS_IF: f64 = 4.092e6;
+/// QZSS L1 intermediate frequency in Hz (same as GPS L1 at the TART IF).
+pub const QZSS_IF: f64 = 4.092e6;
 
 /// Default search bandwidth in Hz.
-pub const SBAS_SEARCH_BAND: f64 = 6000.0;
+pub const QZSS_SEARCH_BAND: f64 = 6000.0;
 
-/// First SBAS PRN.
-const SBAS_PRN_BASE: usize = 120;
+/// First QZSS PRN.
+const QZSS_PRN_BASE: usize = 184;
 
 // ---------------------------------------------------------------------------
-// SBAS G2 delay table (PRN 120–158)
+// QZSS G2 delay table (PRN 184–206)
 // ---------------------------------------------------------------------------
 
-/// Code-phase delay table (G2 shift) for SBAS PRNs 120–158.
+/// Code-phase delay table (G2 shift) for QZSS PRNs 184–206.
 ///
 /// Values from L1 C/A PRN Code Assignments (Jan 2026).
-const CODE_DELAY_TABLE: [usize; SBAS_NUM_SATS] = [
-    145, 175,  52,  21, 237, 235, 886, 657, 634, 762,
-    355, 1012, 176, 603, 130, 359, 595,  68, 386, 797,
-    456, 499,  883, 307, 127, 211, 121, 118, 163, 628,
-    853, 484,  289, 811, 202, 1021, 463, 568, 904,
+#[rustfmt::skip]
+const CODE_DELAY_TABLE: [usize; QZSS_NUM_SATS] = [
+    476, 193, 109, 445, 291,  87, 399, 292, 901, 339,
+    208, 711, 189, 263, 537, 663, 942, 173, 900,  30,
+    500, 935, 556,
 ];
 
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
 
-/// Result of an SBAS signal acquisition attempt for a single antenna.
+/// Result of a QZSS signal acquisition attempt for a single antenna.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SbasAcquisitionResult {
+pub struct QzssAcquisitionResult {
     pub prn: usize,
     /// Peak correlation magnitude (normalised).
     pub signal_strength: f64,
@@ -62,10 +62,10 @@ pub struct SbasAcquisitionResult {
     pub frequency: f64,
 }
 
-/// Per-SV SBAS acquisition result with per-antenna measurements.
+/// Per-SV QZSS acquisition result with per-antenna measurements.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SbasPrnResult {
-    /// Constellation label, e.g. "SBAS120".
+pub struct QzssPrnResult {
+    /// Constellation label, e.g. "QZSS184".
     pub sv: String,
     /// Per-antenna signal strengths.
     pub strengths: Vec<f64>,
@@ -90,34 +90,34 @@ pub struct SbasPrnResult {
     pub freq_mad: Option<f64>,
 }
 
-/// Collection of SBAS acquisition results for all PRNs.
+/// Collection of QZSS acquisition results for all PRNs.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SbasAllAcquisitionOutput {
-    pub results: Vec<SbasPrnResult>,
+pub struct QzssAllAcquisitionOutput {
+    pub results: Vec<QzssPrnResult>,
 }
 
 // ---------------------------------------------------------------------------
-// SBAS code generation
+// QZSS code generation
 // ---------------------------------------------------------------------------
 
-/// Look up the G2 shift for an SBAS PRN (120-based, 0-indexed into the table).
-fn sbas_g2shift(prn: usize) -> usize {
-    CODE_DELAY_TABLE[prn - SBAS_PRN_BASE]
+/// Look up the G2 shift for a QZSS PRN (184-based, 0-indexed into the table).
+fn qzss_g2shift(prn: usize) -> usize {
+    CODE_DELAY_TABLE[prn - QZSS_PRN_BASE]
 }
 
-/// Generate the 1023-chip C/A gold code for an SBAS PRN.
-pub fn generate_sbas_ca_code(prn: usize) -> [f64; acquisition::CA_CHIPS] {
+/// Generate the 1023-chip C/A gold code for a QZSS PRN.
+pub fn generate_qzss_ca_code(prn: usize) -> [f64; acquisition::CA_CHIPS] {
     assert!(
-        (SBAS_PRN_BASE..SBAS_PRN_BASE + SBAS_NUM_SATS).contains(&prn),
-        "SBAS PRN must be in {SBAS_PRN_BASE}..={}, got {prn}",
-        SBAS_PRN_BASE + SBAS_NUM_SATS - 1
+        (QZSS_PRN_BASE..QZSS_PRN_BASE + QZSS_NUM_SATS).contains(&prn),
+        "QZSS PRN must be in {QZSS_PRN_BASE}..={}, got {prn}",
+        QZSS_PRN_BASE + QZSS_NUM_SATS - 1
     );
-    generate_ca_code_from_delay(sbas_g2shift(prn))
+    generate_ca_code_from_delay(qzss_g2shift(prn))
 }
 
-/// Resample the SBAS C/A code to `samples_per_code` samples per period.
-pub fn sbas_gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
-    let ca = generate_sbas_ca_code(prn);
+/// Resample the QZSS C/A code to `samples_per_code` samples per period.
+pub fn qzss_gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
+    let ca = generate_qzss_ca_code(prn);
     gold_code_from_ca(samples_per_code, &ca, epochs)
 }
 
@@ -126,14 +126,14 @@ pub fn sbas_gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64
 // ---------------------------------------------------------------------------
 
 /// Perform parallel code-phase search (FFT circular cross-correlation) for a
-/// single SBAS PRN over a frequency search band.
-pub fn acquire_sbas(
+/// single QZSS PRN over a frequency search band.
+pub fn acquire_qzss(
     x: &[f64],
     sampling_freq: f64,
     center_freq: f64,
     search_band: f64,
     prn: usize,
-) -> SbasAcquisitionResult {
+) -> QzssAcquisitionResult {
     let sampling_period = 1.0 / sampling_freq;
     let samples_per_ms = sampling_freq / 1000.0;
     let samples_per_chunk = samples_per_ms as usize;
@@ -157,7 +157,7 @@ pub fn acquire_sbas(
     let ifft = planner.plan_fft_inverse(total_samples);
 
     // --- Local code replica ------------------------------------------------
-    let code = sbas_gold_code(samples_per_ms, prn, epochs_available);
+    let code = qzss_gold_code(samples_per_ms, prn, epochs_available);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -242,7 +242,7 @@ pub fn acquire_sbas(
     let codephase_frac = codephase_in_samples as f64 / samples_per_ms;
     let frequency = fc[best_freq_idx] - center_freq;
 
-    SbasAcquisitionResult {
+    QzssAcquisitionResult {
         prn,
         signal_strength: best_peak as f64,
         second_peak: second_peak as f64,
@@ -255,18 +255,18 @@ pub fn acquire_sbas(
 // All-PRN search
 // ---------------------------------------------------------------------------
 
-/// Search for all SBAS L1 C/A PRNs across selected antennas.
+/// Search for all QZSS L1 C/A PRNs across selected antennas.
 ///
 /// If `ant_filter` is `Some(idx)`, only that antenna is used; otherwise all
 /// antennas are searched.  PRN processing is parallelised via rayon.
-pub fn acquire_all_sbas(
+pub fn acquire_all_qzss(
     obs: &Observation,
     center_freq: f64,
     search_band: f64,
     ant_filter: Option<usize>,
     debug: bool,
     cn0: bool,
-) -> SbasAllAcquisitionOutput {
+) -> QzssAllAcquisitionOutput {
     let sampling_freq = obs.get_sampling_rate();
     let n_ant = obs.config.num_antenna();
     let samples_per_ms = sampling_freq / 1000.0;
@@ -290,11 +290,11 @@ pub fn acquire_all_sbas(
         })
         .collect();
 
-    let prn_range: Vec<usize> = (SBAS_PRN_BASE..SBAS_PRN_BASE + SBAS_NUM_SATS).collect();
-    let total = SBAS_NUM_SATS;
+    let prn_range: Vec<usize> = (QZSS_PRN_BASE..QZSS_PRN_BASE + QZSS_NUM_SATS).collect();
+    let total = QZSS_NUM_SATS;
     let counter = AtomicUsize::new(0);
 
-    let mut results: Vec<SbasPrnResult> = prn_range
+    let mut results: Vec<QzssPrnResult> = prn_range
         .into_par_iter()
         .map(|prn| {
             let mut strengths = Vec::with_capacity(ant_indices.len());
@@ -307,11 +307,11 @@ pub fn acquire_all_sbas(
             let mut freqs = Vec::with_capacity(ant_indices.len());
 
             for (i, raw) in ant_data.iter().enumerate() {
-                let result = acquire_sbas(raw, sampling_freq, center_freq, search_band, prn);
+                let result = acquire_qzss(raw, sampling_freq, center_freq, search_band, prn);
 
                 if debug {
                     eprintln!(
-                        "  sbas PRN {:3} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
+                        "  qzss PRN {:3} ant {:2}: strength={:.3}  phase={:.6}  freq={:.1} Hz",
                         prn,
                         ant_indices[i],
                         result.signal_strength,
@@ -348,9 +348,9 @@ pub fn acquire_all_sbas(
             };
 
             let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            eprintln!("  sbas [{n}/{total}]");
+            eprintln!("  qzss [{n}/{total}]");
             if debug {
-                eprintln!("  sbas [{n}/{total}] PRN {prn:03} complete");
+                eprintln!("  qzss [{n}/{total}] PRN {prn:03} complete");
             }
 
             let (phase_median, phase_mad, freq_median, freq_mad) =
@@ -367,8 +367,8 @@ pub fn acquire_all_sbas(
                     (None, None, None, None)
                 };
 
-            SbasPrnResult {
-                sv: format!("SBAS{prn:03}"),
+            QzssPrnResult {
+                sv: format!("QZSS{prn:03}"),
                 strengths,
                 phases,
                 freqs,
@@ -383,7 +383,7 @@ pub fn acquire_all_sbas(
 
     results.sort_by_key(|r| r.sv.clone());
 
-    SbasAllAcquisitionOutput { results }
+    QzssAllAcquisitionOutput { results }
 }
 
 #[cfg(test)]
@@ -391,41 +391,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_sbas_ca_code_length() {
-        let ca = generate_sbas_ca_code(120);
+    fn test_generate_qzss_ca_code_length() {
+        let ca = generate_qzss_ca_code(184);
         assert_eq!(ca.len(), acquisition::CA_CHIPS);
     }
 
     #[test]
-    fn test_generate_sbas_ca_code_bipolar() {
-        let ca = generate_sbas_ca_code(125);
+    fn test_generate_qzss_ca_code_bipolar() {
+        let ca = generate_qzss_ca_code(190);
         for &v in &ca {
             assert!(v == 1.0 || v == -1.0, "unexpected value {v}");
         }
     }
 
     #[test]
-    fn test_sbas_gold_code_length() {
-        let code = sbas_gold_code(1023.0, 120, 2.0);
+    fn test_qzss_gold_code_length() {
+        let code = qzss_gold_code(1023.0, 184, 2.0);
         assert_eq!(code.len(), 2046);
     }
 
     #[test]
     #[should_panic]
-    fn test_sbas_prn_out_of_range_low() {
-        generate_sbas_ca_code(1); // GPS range, not SBAS
+    fn test_qzss_prn_out_of_range_low() {
+        generate_qzss_ca_code(100);
     }
 
     #[test]
     #[should_panic]
-    fn test_sbas_prn_out_of_range_high() {
-        generate_sbas_ca_code(200); // beyond SBAS range
+    fn test_qzss_prn_out_of_range_high() {
+        generate_qzss_ca_code(300);
     }
 
     #[test]
-    fn test_all_sbas_prns_generate() {
-        for prn in SBAS_PRN_BASE..SBAS_PRN_BASE + SBAS_NUM_SATS {
-            let ca = generate_sbas_ca_code(prn);
+    fn test_all_qzss_prns_generate() {
+        for prn in QZSS_PRN_BASE..QZSS_PRN_BASE + QZSS_NUM_SATS {
+            let ca = generate_qzss_ca_code(prn);
             assert_eq!(
                 ca.len(),
                 acquisition::CA_CHIPS,
@@ -453,27 +453,25 @@ mod tests {
         format!("{d0}{d1}{d2}{d3}")
     }
 
-    /// First 10 chips (octal) for each SBAS PRN from PRN assignment doc.
-    /// Index 0 = PRN 120.
+    /// First 10 chips (octal) for each QZSS PRN from PRN assignment doc.
+    /// Index 0 = PRN 184.
     ///
     /// Note: our C/A code generator uses -(G1 * G2) which produces XNOR
     /// (inverted relative to the IS-GPS-200 XOR definition).  The reference
     /// values below are therefore the *inverted* spec values, matching the
     /// "Initial G2 Setting" column rather than the "First 10 Chips" column.
     #[rustfmt::skip]
-    const REF_FIRST10: [&str; 39] = [
-        "1106", "1241", "0267", "0232", "1617", "1076", "1764", "0717",
-        "1532", "1250", "0341", "0551", "0520", "1731", "0706", "1216",
-        "0740", "1007", "0450", "0305", "1653", "1411", "1644", "1312",
-        "1060", "1560", "0035", "0355", "0335", "1254", "1041", "0142",
-        "1641", "1504", "0751", "1774", "0107", "1153", "1542",
+    const REF_FIRST10: [&str; 23] = [
+        "1003", "1454", "1665", "0471", "1750", "0307", "0272", "0764",
+        "1422", "1050", "1607", "1747", "1305", "0540", "1363", "0727",
+        "0147", "1206", "1045", "0476", "0604", "1757", "1330",
     ];
 
     #[test]
-    fn test_sbas_first10_octal() {
-        for i in 0..SBAS_NUM_SATS {
-            let prn = SBAS_PRN_BASE + i;
-            let ca = generate_sbas_ca_code(prn);
+    fn test_qzss_first10_octal() {
+        for i in 0..QZSS_NUM_SATS {
+            let prn = QZSS_PRN_BASE + i;
+            let ca = generate_qzss_ca_code(prn);
             let octal = chips10_to_octal(&ca[0..10]);
             assert_eq!(
                 octal, REF_FIRST10[i],
