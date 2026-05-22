@@ -8,6 +8,8 @@
 //!
 //! Reference: IS-GPS-800H, Section 3.2.2.1.1 and Table 3.2-2.
 
+use std::sync::LazyLock;
+
 /// Number of GPS L1C PRN codes available (SV 1–63).
 pub const L1C_NUM_SATS: usize = 63;
 
@@ -85,6 +87,17 @@ fn legendre_sequence() -> [u8; LEGENDRE_N] {
     seq
 }
 
+/// Cached Legendre sequence — computed once, shared by all PRNs.
+static LEGENDRE: LazyLock<[u8; LEGENDRE_N]> = LazyLock::new(legendre_sequence);
+
+/// Cached BOC(1,1)-modulated pilot codes for all 63 PRNs.
+/// Pre-computed once at first use; ~10 MB total.
+static L1C_BOC_CODES: LazyLock<Vec<Vec<f64>>> = LazyLock::new(|| {
+    (1..=L1C_NUM_SATS)
+        .map(|prn| generate_l1c_pilot_code(prn))
+        .collect()
+});
+
 // ---------------------------------------------------------------------------
 // Weil code + expansion insertion
 // ---------------------------------------------------------------------------
@@ -104,7 +117,7 @@ fn legendre_sequence() -> [u8; LEGENDRE_N] {
 ///      Result: 10230 chips.
 fn generate_l1cp_chips(prn: usize) -> [u8; L1C_CHIPS] {
     let (w, p) = L1CP_PARAMS[prn - 1];
-    let legendre = legendre_sequence();
+    let legendre = &*LEGENDRE;
     let mut chips = [0u8; L1C_CHIPS];
 
     // Build the Weil code of length N
@@ -178,7 +191,7 @@ pub fn generate_l1c_pilot_code(prn: usize) -> Vec<f64> {
 /// Resample the BOC(1,1)-modulated L1C pilot code to `samples_per_code`
 /// samples per 10~ms code period, repeating for `epochs` full periods.
 pub fn l1c_code_resampled(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
-    let boc = generate_l1c_pilot_code(prn);
+    let boc = &L1C_BOC_CODES[prn - 1];
     let boc_len = boc.len() as f64; // 20460
     let samples_per_chip = samples_per_code / boc_len;
     let num_samples = (samples_per_code * epochs).floor() as usize;

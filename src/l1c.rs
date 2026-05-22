@@ -86,24 +86,22 @@ pub struct L1CAllAcquisitionOutput {
 /// single GPS L1C PRN over a frequency search band.
 ///
 /// Uses the BOC(1,1)-modulated pilot code as the local replica.
+///
+/// `signal_f32` and `phasepoints` are pre-computed by the caller to avoid
+/// redundant allocations across PRN/antenna iterations.
 pub fn acquire_l1c_single(
-    x: &[f64],
+    signal_f32: &[f32],
+    phasepoints: &[f64],
     sampling_freq: f64,
     center_freq: f64,
     search_band: f64,
     prn: usize,
+    samples_per_code_period: usize,
 ) -> L1CAcquisitionResult {
-    let sampling_period = 1.0 / sampling_freq;
-    // L1C code period is 10 ms
-    let samples_per_code_period = (sampling_freq * L1C_CODE_PERIOD) as usize;
+    let num_samples = signal_f32.len();
 
-    let epochs_available = (x.len() as f64 / samples_per_code_period as f64).floor();
-    // Use at least 1 full code period of samples for the local replica,
-    // but never exceed the actual available signal samples.
-    let epochs = epochs_available.max(1.0);
-    let ideal_samples = (epochs * samples_per_code_period as f64) as usize;
-    let num_samples = ideal_samples.min(x.len());
-    let effective_epochs = num_samples as f64 / samples_per_code_period as f64;
+    let epochs_available = (num_samples as f64 / samples_per_code_period as f64).floor();
+    let effective_epochs = epochs_available.max(1.0);
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -115,59 +113,67 @@ pub fn acquire_l1c_single(
         })
         .collect();
 
-    // --- FFT planner -------------------------------------------------------
-    let mut planner: FftPlanner<f32> = FftPlanner::new();
-    let fft = planner.plan_fft_forward(num_samples);
-    let ifft = planner.plan_fft_inverse(num_samples);
+    // --- FFT planner (thread-local, reused across calls) -------------------
+    thread_local! {
+        static PLANNER: std::cell::RefCell<FftPlanner<f32>> =
+            std::cell::RefCell::new(FftPlanner::new());
+    }
 
     // --- Local code replica ------------------------------------------------
-    // The BOC(1,1) code has 2 * L1C_CHIPS = 20460 samples per period
     let code = l1c_code_resampled(samples_per_code_period as f64, prn, effective_epochs);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
         .collect();
-    fft.process(&mut code_complex);
+
+    PLANNER.with(|p| {
+        let mut planner = p.borrow_mut();
+        let fft = planner.plan_fft_forward(num_samples);
+        fft.process(&mut code_complex);
+    });
     for c in &mut code_complex {
         *c = c.conj();
     }
 
-    // --- Pre-compute phase ramp --------------------------------------------
-    let phase_const = TAU * sampling_period;
-    let phasepoints: Vec<f64> = (0..num_samples)
-        .map(|i| phase_const * i as f64)
-        .collect();
-
-    // --- Per-frequency-bin correlation -------------------------------------
+    // --- Per-frequency-bin correlation (pre-allocated buffers) -------------
     let mut best_peak: f32 = f32::NEG_INFINITY;
     let mut best_freq_idx: usize = 0;
     let mut best_codephase: usize = 0;
     let mut best_corr: Vec<f32> = Vec::new();
 
-    let signal_f32: Vec<f32> = x[..num_samples].iter().map(|&v| v as f32).collect();
+    // Pre-allocate once, reuse across all frequency bins
+    let mut iq_buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); num_samples];
+    let mut corr_buf: Vec<f32> = vec![0.0; num_samples];
 
     for (fi, &freq) in fc.iter().enumerate() {
-        let mut iq: Vec<Complex<f32>> = phasepoints
-            .iter()
-            .zip(signal_f32.iter())
-            .map(|(&p, &s)| {
-                let phase = (p * freq) as f32;
-                Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0)
-            })
-            .collect();
+        // Compute IQ into pre-allocated buffer
+        for (idx, (&p, &s)) in phasepoints.iter().zip(signal_f32.iter()).enumerate() {
+            let phase = (p * freq) as f32;
+            iq_buf[idx] = Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0);
+        }
 
-        fft.process(&mut iq);
+        PLANNER.with(|p| {
+            let mut planner = p.borrow_mut();
+            let fft = planner.plan_fft_forward(num_samples);
+            fft.process(&mut iq_buf);
+        });
 
-        for (iq_elem, &code_elem) in iq.iter_mut().zip(code_complex.iter()) {
+        for (iq_elem, &code_elem) in iq_buf.iter_mut().zip(code_complex.iter()) {
             *iq_elem *= code_elem;
         }
 
-        ifft.process(&mut iq);
+        PLANNER.with(|p| {
+            let mut planner = p.borrow_mut();
+            let ifft = planner.plan_fft_inverse(num_samples);
+            ifft.process(&mut iq_buf);
+        });
 
         let scale = 1.0 / (num_samples as f32).sqrt();
-        let corr: Vec<f32> = iq.iter().map(|c| c.norm() * scale).collect();
+        for (idx, c) in iq_buf.iter().enumerate() {
+            corr_buf[idx] = c.norm() * scale;
+        }
 
-        let (peak_idx, &peak_val) = corr
+        let (peak_idx, &peak_val) = corr_buf
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
@@ -177,7 +183,7 @@ pub fn acquire_l1c_single(
             best_peak = peak_val;
             best_freq_idx = fi;
             best_codephase = peak_idx;
-            best_corr = corr;
+            best_corr = corr_buf.clone();
         }
     }
 
@@ -247,14 +253,19 @@ pub fn acquire_all_l1c(
         (0..n_ant).collect()
     };
 
-    // Pre-extract and de-mean all antenna data (avoids repeated HDF5 reads)
-    let ant_data: Vec<Vec<f64>> = ant_indices
+    // Pre-extract and de-mean all antenna data, convert to f32 once
+    let ant_data: Vec<(Vec<f32>, Vec<f64>)> = ant_indices
         .iter()
         .map(|&ant_idx| {
             let bipolar = obs.get_antenna(ant_idx);
             let mean = bipolar.iter().sum::<f64>() / bipolar.len() as f64;
             let raw: Vec<f64> = bipolar.iter().map(|&v| v - mean).collect();
-            raw[..num_samples.min(raw.len())].to_vec()
+            let len = num_samples.min(raw.len());
+            let signal_f32: Vec<f32> = raw[..len].iter().map(|&v| v as f32).collect();
+            let phase_const = TAU / sampling_freq;
+            let phasepoints: Vec<f64> =
+                (0..len).map(|i| phase_const * i as f64).collect();
+            (signal_f32, phasepoints)
         })
         .collect();
 
@@ -274,9 +285,9 @@ pub fn acquire_all_l1c(
             let mut phases = Vec::with_capacity(ant_indices.len());
             let mut freqs = Vec::with_capacity(ant_indices.len());
 
-            for (i, raw) in ant_data.iter().enumerate() {
+            for (i, (signal_f32, phasepoints)) in ant_data.iter().enumerate() {
                 let result =
-                    acquire_l1c_single(raw, sampling_freq, center_freq, search_band, prn);
+                    acquire_l1c_single(signal_f32, phasepoints, sampling_freq, center_freq, search_band, prn, num_samples_per_code_period);
 
                 if debug {
                     eprintln!(
@@ -351,7 +362,7 @@ pub fn acquire_all_l1c(
         .collect();
 
     // Sort by SV label to maintain ordering
-    results.sort_by_key(|r| r.sv.clone());
+    results.sort_by(|a, b| a.sv.cmp(&b.sv));
 
     L1CAllAcquisitionOutput { results }
 }

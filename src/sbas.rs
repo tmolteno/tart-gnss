@@ -128,18 +128,17 @@ pub fn sbas_gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64
 /// Perform parallel code-phase search (FFT circular cross-correlation) for a
 /// single SBAS PRN over a frequency search band.
 pub fn acquire_sbas(
-    x: &[f64],
+    signal_f32: &[f32],
+    phasepoints: &[f64],
     sampling_freq: f64,
     center_freq: f64,
     search_band: f64,
     prn: usize,
+    samples_per_chunk: usize,
 ) -> SbasAcquisitionResult {
-    let sampling_period = 1.0 / sampling_freq;
-    let samples_per_ms = sampling_freq / 1000.0;
-    let samples_per_chunk = samples_per_ms as usize;
-
-    let epochs_available = (x.len() as f64 / samples_per_ms).floor();
-    let total_samples = (epochs_available * samples_per_chunk as f64) as usize;
+    let num_samples = signal_f32.len();
+    let samples_per_ms = samples_per_chunk as f64;
+    let epochs_available = num_samples as f64 / samples_per_ms;
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -151,10 +150,23 @@ pub fn acquire_sbas(
         })
         .collect();
 
-    // --- FFT planner -------------------------------------------------------
-    let mut planner: FftPlanner<f32> = FftPlanner::new();
-    let fft = planner.plan_fft_forward(total_samples);
-    let ifft = planner.plan_fft_inverse(total_samples);
+    // --- FFT planner (thread-local) ---------------------------------------
+    thread_local! {
+        static PLANNER: std::cell::RefCell<FftPlanner<f32>> =
+            std::cell::RefCell::new(FftPlanner::new());
+    }
+
+    let (fft, ifft) = PLANNER.with(|p| {
+        let mut planner = p.borrow_mut();
+        (
+            planner.plan_fft_forward(num_samples),
+            planner.plan_fft_inverse(num_samples),
+        )
+    });
+
+    // --- Pre-allocated working buffers ------------------------------------
+    let mut iq_buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); num_samples];
+    let mut corr_buf: Vec<f32> = vec![0.0; num_samples];
 
     // --- Local code replica ------------------------------------------------
     let code = sbas_gold_code(samples_per_ms, prn, epochs_available);
@@ -167,43 +179,32 @@ pub fn acquire_sbas(
         *c = c.conj();
     }
 
-    // --- Pre-compute phase ramp --------------------------------------------
-    let phase_const = TAU * sampling_period;
-    let phasepoints: Vec<f64> = (0..total_samples)
-        .map(|i| phase_const * i as f64)
-        .collect();
-
     // --- Per-frequency-bin correlation -------------------------------------
-    let signal_len = total_samples.min(x.len());
     let mut best_peak: f32 = f32::NEG_INFINITY;
     let mut best_freq_idx: usize = 0;
     let mut best_codephase: usize = 0;
     let mut best_corr: Vec<f32> = Vec::new();
 
-    let signal_f32: Vec<f32> = x[..signal_len].iter().map(|&v| v as f32).collect();
-
     for (fi, &freq) in fc.iter().enumerate() {
-        let mut iq: Vec<Complex<f32>> = phasepoints
-            .iter()
-            .zip(signal_f32.iter())
-            .map(|(&p, &s)| {
-                let phase = (p * freq) as f32;
-                Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0)
-            })
-            .collect();
+        for (idx, (&p, &s)) in phasepoints.iter().zip(signal_f32.iter()).enumerate() {
+            let phase = (p * freq) as f32;
+            iq_buf[idx] = Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0);
+        }
 
-        fft.process(&mut iq);
+        fft.process(&mut iq_buf);
 
-        for (iq_elem, &code_elem) in iq.iter_mut().zip(code_complex.iter()) {
+        for (iq_elem, &code_elem) in iq_buf.iter_mut().zip(code_complex.iter()) {
             *iq_elem *= code_elem;
         }
 
-        ifft.process(&mut iq);
+        ifft.process(&mut iq_buf);
 
-        let scale = 1.0 / (signal_len as f32).sqrt();
-        let corr: Vec<f32> = iq.iter().map(|c| c.norm() * scale).collect();
+        let scale = 1.0 / (num_samples as f32).sqrt();
+        for (idx, c) in iq_buf.iter().enumerate() {
+            corr_buf[idx] = c.norm() * scale;
+        }
 
-        let (peak_idx, &peak_val) = corr
+        let (peak_idx, &peak_val) = corr_buf
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
@@ -213,7 +214,7 @@ pub fn acquire_sbas(
             best_peak = peak_val;
             best_freq_idx = fi;
             best_codephase = peak_idx;
-            best_corr = corr;
+            best_corr = corr_buf.clone();
         }
     }
 
@@ -279,14 +280,20 @@ pub fn acquire_all_sbas(
         (0..n_ant).collect()
     };
 
-    // Pre-extract and de-mean all antenna data.
-    let ant_data: Vec<Vec<f64>> = ant_indices
+    // Pre-extract, de-mean, convert to f32, and pre-compute phasepoints.
+    let phase_const = TAU / sampling_freq;
+    let ant_data: Vec<(Vec<f32>, Vec<f64>)> = ant_indices
         .iter()
         .map(|&ant_idx| {
             let bipolar = obs.get_antenna(ant_idx);
             let mean = bipolar.iter().sum::<f64>() / bipolar.len() as f64;
             let raw: Vec<f64> = bipolar.iter().map(|&v| v - mean).collect();
-            raw[..num_samples.min(raw.len())].to_vec()
+            let raw = &raw[..num_samples.min(raw.len())];
+            let signal_f32: Vec<f32> = raw.iter().map(|&v| v as f32).collect();
+            let phasepoints: Vec<f64> = (0..signal_f32.len())
+                .map(|i| phase_const * i as f64)
+                .collect();
+            (signal_f32, phasepoints)
         })
         .collect();
 
@@ -306,8 +313,16 @@ pub fn acquire_all_sbas(
             let mut phases = Vec::with_capacity(ant_indices.len());
             let mut freqs = Vec::with_capacity(ant_indices.len());
 
-            for (i, raw) in ant_data.iter().enumerate() {
-                let result = acquire_sbas(raw, sampling_freq, center_freq, search_band, prn);
+            for (i, (signal_f32, phasepoints)) in ant_data.iter().enumerate() {
+                let result = acquire_sbas(
+                    signal_f32,
+                    phasepoints,
+                    sampling_freq,
+                    center_freq,
+                    search_band,
+                    prn,
+                    num_samples_per_ms,
+                );
 
                 if debug {
                     eprintln!(
@@ -381,7 +396,7 @@ pub fn acquire_all_sbas(
         })
         .collect();
 
-    results.sort_by_key(|r| r.sv.clone());
+    results.sort_by(|a, b| a.sv.cmp(&b.sv));
 
     SbasAllAcquisitionOutput { results }
 }

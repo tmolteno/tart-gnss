@@ -23,6 +23,21 @@
 - **SBAS first-10-chips test** — added cross-validation of generated C/A
   codes for all 39 SBAS PRNs against the reference octal values from the
   PRN assignment document.
+- **Performance optimisations** — several changes reduce per-PRN acquisition
+  time and memory churn, giving ~2× speedup for `--all` mode:
+  - Legendre sequences (L1C and BeiDou, length 10223/10243) now cached via
+    `LazyLock`, computed once instead of per-PRN.
+  - BOC(1,1) pilot codes for L1C and BeiDou (20460 samples × 63 PRNs ≈ 10 MB
+    each) pre-computed and cached on first use.
+  - Per-frequency-bin `iq` and `corr` buffers pre-allocated once and reused
+    across the ~21-bin search loop, eliminating repeated large allocations.
+  - `FftPlanner` moved to a thread-local static, reused across all PRN calls
+    within a thread instead of being recreated per call.
+  - Antenna data pre-converted from `f64` to `f32` and phase-ramp
+    pre-computed once in each `acquire_all_*` function, shared across all PRN
+    iterations instead of repeated per PRN.
+  - `sort_by_key` replaced with `sort_by` to avoid per-element `String` clones
+    during result ordering.
 - **README** — updated with all CLI flags (`--l1c`, `--qzss`, `--cn0`,
   `--output`, `--debug`), expanded flag table, and current PRN ranges.
 

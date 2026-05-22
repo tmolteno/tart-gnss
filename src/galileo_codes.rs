@@ -12,6 +12,9 @@ pub const GALILEO_E1_NUM_SATS: usize = 50;
 /// Chips per Galileo E1 primary code period.
 pub const GALILEO_E1_CHIPS: usize = 4092;
 
+/// Galileo E1 code period in seconds (4 ms).
+pub const GALILEO_E1_CODE_PERIOD: f64 = 0.004;
+
 /// Galileo E1-C primary codes (pilot channel), hex-encoded, one entry per PRN 1..=50.
 #[rustfmt::skip]
 pub const GALILEO_E1_C_CODES: [&str; GALILEO_E1_NUM_SATS] = [

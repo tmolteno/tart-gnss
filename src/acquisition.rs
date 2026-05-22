@@ -163,20 +163,20 @@ pub fn gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
 /// Perform parallel code-phase search (FFT circular cross-correlation) for a
 /// single GPS PRN over a frequency search band.
 ///
-/// Returns `[PRN, signal_strength, codephase_frac, frequency]`.
+/// `signal_f32` and `phasepoints` are pre-computed by the caller.
+/// `samples_per_chunk` is the number of samples per 1-ms code period.
 pub fn acquire_full(
-    x: &[f64],
+    signal_f32: &[f32],
+    phasepoints: &[f64],
     sampling_freq: f64,
     center_freq: f64,
     search_band: f64,
     prn: usize,
+    samples_per_chunk: usize,
 ) -> AcquisitionResult {
-    let sampling_period = 1.0 / sampling_freq;
-    let samples_per_ms = sampling_freq / 1000.0;
-    let samples_per_chunk = samples_per_ms as usize;
-
-    let epochs_available = (x.len() as f64 / samples_per_ms).floor();
-    let total_samples = (epochs_available * samples_per_chunk as f64) as usize;
+    let num_samples = signal_f32.len();
+    let samples_per_ms = samples_per_chunk as f64;
+    let epochs_available = num_samples as f64 / samples_per_ms;
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -186,10 +186,11 @@ pub fn acquire_full(
         .map(|i| center_freq - search_band + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0))
         .collect();
 
-    // --- FFT planner -------------------------------------------------------
-    let mut planner: FftPlanner<f32> = FftPlanner::new();
-    let fft = planner.plan_fft_forward(total_samples);
-    let ifft = planner.plan_fft_inverse(total_samples);
+    // --- FFT planner (thread-local, reused across calls) -------------------
+    thread_local! {
+        static PLANNER: std::cell::RefCell<FftPlanner<f32>> =
+            std::cell::RefCell::new(FftPlanner::new());
+    }
 
     // --- Local code replica ------------------------------------------------
     let code = gold_code(samples_per_ms, prn, epochs_available);
@@ -197,53 +198,53 @@ pub fn acquire_full(
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
         .collect();
-    fft.process(&mut code_complex);
-    // conjugate in-place
+
+    PLANNER.with(|p| {
+        let mut planner = p.borrow_mut();
+        let fft = planner.plan_fft_forward(num_samples);
+        fft.process(&mut code_complex);
+    });
     for c in &mut code_complex {
         *c = c.conj();
     }
 
-    // --- Pre-compute phase ramp --------------------------------------------
-    let phase_const = TAU * sampling_period;
-    let phasepoints: Vec<f64> = (0..total_samples)
-        .map(|i| phase_const * i as f64)
-        .collect();
-
-    // --- Per-frequency-bin correlation -------------------------------------
-    let signal_len = total_samples.min(x.len());
+    // --- Per-frequency-bin correlation (pre-allocated buffers) -------------
     let mut best_peak: f32 = f32::NEG_INFINITY;
     let mut best_freq_idx: usize = 0;
     let mut best_codephase: usize = 0;
     let mut best_corr: Vec<f32> = Vec::new();
 
-    let signal_f32: Vec<f32> = x[..signal_len].iter().map(|&v| v as f32).collect();
+    let mut iq_buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); num_samples];
+    let mut corr_buf: Vec<f32> = vec![0.0; num_samples];
 
     for (fi, &freq) in fc.iter().enumerate() {
-        // exp(j * phasepoints * freq) * signal
-        let mut iq: Vec<Complex<f32>> = phasepoints
-            .iter()
-            .zip(signal_f32.iter())
-            .map(|(&p, &s)| {
-                let phase = (p * freq) as f32;
-                Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0)
-            })
-            .collect();
+        for (idx, (&p, &s)) in phasepoints.iter().zip(signal_f32.iter()).enumerate() {
+            let phase = (p * freq) as f32;
+            iq_buf[idx] = Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0);
+        }
 
-        fft.process(&mut iq);
+        PLANNER.with(|p| {
+            let mut planner = p.borrow_mut();
+            let fft = planner.plan_fft_forward(num_samples);
+            fft.process(&mut iq_buf);
+        });
 
-        // Multiply by conjugated code spectrum
-        for (iq_elem, &code_elem) in iq.iter_mut().zip(code_complex.iter()) {
+        for (iq_elem, &code_elem) in iq_buf.iter_mut().zip(code_complex.iter()) {
             *iq_elem *= code_elem;
         }
 
-        ifft.process(&mut iq);
+        PLANNER.with(|p| {
+            let mut planner = p.borrow_mut();
+            let ifft = planner.plan_fft_inverse(num_samples);
+            ifft.process(&mut iq_buf);
+        });
 
-        // Magnitude / sqrt(N)
-        let scale = 1.0 / (signal_len as f32).sqrt();
-        let corr: Vec<f32> = iq.iter().map(|c| c.norm() * scale).collect();
+        let scale = 1.0 / (num_samples as f32).sqrt();
+        for (idx, c) in iq_buf.iter().enumerate() {
+            corr_buf[idx] = c.norm() * scale;
+        }
 
-        // Find peak in this frequency bin
-        let (peak_idx, &peak_val) = corr
+        let (peak_idx, &peak_val) = corr_buf
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
@@ -253,19 +254,17 @@ pub fn acquire_full(
             best_peak = peak_val;
             best_freq_idx = fi;
             best_codephase = peak_idx;
-            best_corr = corr;
+            best_corr = corr_buf.clone();
         }
     }
 
     // --- Find second peak (>1 chip from main peak) -------------------------
-    // 1 chip in correlation samples
     let chip_width = (sampling_freq / 1.023e6).ceil() as usize;
-    let code_period_samples = samples_per_chunk; // 1 ms
+    let code_period_samples = samples_per_chunk;
     let main_codephase = best_codephase % code_period_samples;
     let mut second_peak: f32 = f32::NEG_INFINITY;
 
     for (idx, &val) in best_corr.iter().enumerate() {
-        // Code-phase distance (modulo code period) to exclude periodic repeats
         let idx_cp = idx % code_period_samples;
         let dist = if idx_cp >= main_codephase {
             (idx_cp - main_codephase).min(code_period_samples - idx_cp + main_codephase)
@@ -277,7 +276,6 @@ pub fn acquire_full(
         }
     }
 
-    // If no valid second peak found (degenerate case), use a small floor
     if second_peak <= 0.0 {
         second_peak = 1e-6;
     }
@@ -327,14 +325,19 @@ pub fn acquire_all_gps(
         (0..n_ant).collect()
     };
 
-    // Pre-extract and de-mean all antenna data (avoids repeated HDF5 reads).
-    let ant_data: Vec<Vec<f64>> = ant_indices
+    // Pre-extract and de-mean all antenna data, convert to f32 once.
+    let ant_data: Vec<(Vec<f32>, Vec<f64>)> = ant_indices
         .iter()
         .map(|&ant_idx| {
             let bipolar = obs.get_antenna(ant_idx);
             let mean = bipolar.iter().sum::<f64>() / bipolar.len() as f64;
             let raw: Vec<f64> = bipolar.iter().map(|&v| v - mean).collect();
-            raw[..num_samples.min(raw.len())].to_vec()
+            let len = num_samples.min(raw.len());
+            let signal_f32: Vec<f32> = raw[..len].iter().map(|&v| v as f32).collect();
+            let phase_const = TAU / sampling_freq;
+            let phasepoints: Vec<f64> =
+                (0..len).map(|i| phase_const * i as f64).collect();
+            (signal_f32, phasepoints)
         })
         .collect();
 
@@ -353,8 +356,8 @@ pub fn acquire_all_gps(
             let mut phases = Vec::with_capacity(ant_indices.len());
             let mut freqs = Vec::with_capacity(ant_indices.len());
 
-            for (i, raw) in ant_data.iter().enumerate() {
-                let result = acquire_full(raw, sampling_freq, center_freq, search_band, prn);
+            for (i, (signal_f32, phasepoints)) in ant_data.iter().enumerate() {
+                let result = acquire_full(signal_f32, phasepoints, sampling_freq, center_freq, search_band, prn, num_samples_per_ms);
 
                 if debug {
                     eprintln!(
@@ -428,7 +431,7 @@ pub fn acquire_all_gps(
         })
         .collect();
 
-    results.sort_by_key(|r| r.sv.clone());
+    results.sort_by(|a, b| a.sv.cmp(&b.sv));
 
     GpsAllAcquisitionOutput { results }
 }

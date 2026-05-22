@@ -9,6 +9,8 @@
 //! Reference implementation: Peter Monta's GNSS-DSP-tools
 //!   https://github.com/pmonta/GNSS-DSP-tools/blob/master/gnsstools/beidou/b1cp.py
 
+use std::sync::LazyLock;
+
 /// Number of BeiDou B1C PRN codes available (SV 1–63).
 pub const BEIDOU_B1C_NUM_SATS: usize = 63;
 
@@ -83,6 +85,17 @@ fn legendre_sequence() -> [u8; LEGENDRE_N] {
     seq
 }
 
+/// Cached Legendre sequence — computed once, shared by all PRNs.
+static LEGENDRE: LazyLock<[u8; LEGENDRE_N]> = LazyLock::new(legendre_sequence);
+
+/// Cached BOC(1,1)-modulated pilot codes for all 63 PRNs.
+/// Pre-computed once at first use; ~10 MB total.
+static B1C_BOC_CODES: LazyLock<Vec<Vec<f64>>> = LazyLock::new(|| {
+    (1..=BEIDOU_B1C_NUM_SATS)
+        .map(|prn| generate_b1c_pilot_code(prn))
+        .collect()
+});
+
 // ---------------------------------------------------------------------------
 // Weil code generation
 // ---------------------------------------------------------------------------
@@ -99,7 +112,7 @@ fn legendre_sequence() -> [u8; LEGENDRE_N] {
 ///      c[n] = W[(n + p - 1) mod N],  for n = 0..code_length-1.
 fn generate_b1cp_chips(prn: usize) -> [u8; BEIDOU_B1C_CHIPS] {
     let (w, p) = B1CP_PARAMS[prn - 1];
-    let legendre = legendre_sequence();
+    let legendre = &*LEGENDRE;
     let mut chips = [0u8; BEIDOU_B1C_CHIPS];
 
     for (n, chip) in chips.iter_mut().enumerate() {
@@ -147,7 +160,7 @@ pub fn generate_b1c_pilot_code(prn: usize) -> Vec<f64> {
 /// Resample the BOC(1,1)-modulated B1C pilot code to `samples_per_code`
 /// samples per 10-ms code period, repeating for `epochs` full periods.
 pub fn b1c_code_resampled(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
-    let boc = generate_b1c_pilot_code(prn);
+    let boc = &B1C_BOC_CODES[prn - 1];
     let boc_len = boc.len() as f64; // 20460
     let samples_per_chip = samples_per_code / boc_len;
     let num_samples = (samples_per_code * epochs).floor() as usize;
