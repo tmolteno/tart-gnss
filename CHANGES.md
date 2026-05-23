@@ -10,6 +10,14 @@
   function now takes an optional `prn_filter` parameter that feeds
   `into_par_iter` directly, avoiding work for unlisted PRNs.
 
+### Fixed
+
+- **Crate package size** — the published crate exceeded the 10 MB crates.io
+  limit because `data/` (12 MB HDF5 observation file), `junk/` (5.4 MB of
+  PDFs and reference scripts), and an untracked `test.json` were included
+  in the package.  Added `exclude = ["data/*", "junk/*", "test.json"]` to
+  `Cargo.toml`.  Package size dropped from ~18 MB to ~270 KB.
+
 ## v0.1.7
 
 ### Added

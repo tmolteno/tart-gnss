@@ -6,6 +6,7 @@ description = "GNSS signal acquisition for the TART radio telescope — GPS L1 C
 license = "GPL-3.0"
 authors = ["Tim Molteno <tim@elec.ac.nz>"]
 repository = "https://github.com/tmolteno/tart-gnss"
+exclude = ["data/*", "junk/*", "test.json"]
 
 [dependencies]
 hdf5-reader = "0.5"
