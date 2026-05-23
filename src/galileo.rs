@@ -11,7 +11,8 @@
 mod galileo_codes;
 
 use crate::observation::Observation;
-use galileo_codes::{GALILEO_E1_C_CODES, GALILEO_E1_CHIPS, GALILEO_E1_CODE_PERIOD, GALILEO_E1_NUM_SATS};
+use galileo_codes::{GALILEO_E1_C_CODES, GALILEO_E1_CHIPS, GALILEO_E1_CODE_PERIOD};
+pub use galileo_codes::GALILEO_E1_NUM_SATS;
 use num_complex::Complex;
 use rayon::prelude::*;
 use rustfft::FftPlanner;

@@ -51,6 +51,9 @@ tart-gnss-acquire --file data/observation.hdf --all \
 
 # Antenna cross-correlation
 tart-gnss-acquire --file data/observation.hdf --i 0 --j 1
+
+# Benchmark (single PRN per constellation, timed breakdown)
+tart-gnss-acquire --file data/observation.hdf --benchmark
 ```
 
 | Flag                      | Description                                         |
@@ -72,6 +75,7 @@ tart-gnss-acquire --file data/observation.hdf --i 0 --j 1
 | `--filter-freq-mad X`     | Drop PRNs with frequency MAD > X (multi-antenna only) |
 | `--i IDX`                 | First antenna index (correlation mode)              |
 | `--j IDX`                 | Second antenna index (correlation mode)             |
+| `--benchmark`             | Single-PRN timing with startup/search breakdown     |
 
 ## JSON output format
 

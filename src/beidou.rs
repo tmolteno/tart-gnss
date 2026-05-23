@@ -12,8 +12,9 @@ mod beidou_codes;
 
 use crate::observation::Observation;
 use beidou_codes::{
-    b1c_code_resampled, BEIDOU_B1C_CODE_PERIOD, BEIDOU_B1C_NUM_SATS,
+    b1c_code_resampled, BEIDOU_B1C_CODE_PERIOD,
 };
+pub use beidou_codes::BEIDOU_B1C_NUM_SATS;
 use num_complex::Complex;
 use rayon::prelude::*;
 use rustfft::FftPlanner;

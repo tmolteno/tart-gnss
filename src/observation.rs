@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0
 
 use chrono::{DateTime, Utc};
-use hdf5_reader::{Hdf5File};
+use hdf5_reader::Hdf5File;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::Config;
 
@@ -90,6 +91,45 @@ impl Observation {
         })
     }
 
+    /// Create a random observation for benchmarking without real data.
+    ///
+    /// Generates random 0/1 samples for `num_antenna` antennas, each with
+    /// `num_samples` samples.  Uses a xorshift64 PRNG seeded from the
+    /// current system time.
+    pub fn random(
+        num_antenna: usize,
+        sampling_frequency: f64,
+        num_samples: usize,
+    ) -> Self {
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let mut rng = XorShift64::new(seed);
+
+        let data: Vec<Vec<u8>> = (0..num_antenna)
+            .map(|_| {
+                let mut ant_data = Vec::with_capacity(num_samples);
+                for _ in 0..num_samples {
+                    ant_data.push((rng.next() & 1) as u8);
+                }
+                ant_data
+            })
+            .collect();
+
+        let config = Config::from_json(&format!(
+            r#"{{"num_antenna":{},"sampling_frequency":{}}}"#,
+            num_antenna, sampling_frequency
+        ))
+        .expect("hard-coded config JSON should be valid");
+
+        Self {
+            timestamp: Utc::now(),
+            config,
+            data,
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Accessors (mirroring the Python API)
     // ---------------------------------------------------------------------------
@@ -163,6 +203,27 @@ impl Observation {
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+/// Simple xorshift64 PRNG for generating random observation data.
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        // Ensure non-zero state
+        Self { state: seed | 1 }
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        x
+    }
+}
 
 /// Unpack a byte slice where each byte encodes 8 consecutive binary samples
 /// (MSB-first, matching `numpy.packbits` default behaviour).

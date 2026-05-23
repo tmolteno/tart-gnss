@@ -50,6 +50,7 @@ fn main() {
     let mut output_file: Option<String> = None;
     let mut debug_flag = false;
     let mut cn0_flag = false;
+    let mut benchmark_flag = false;
     let mut prn_filter: Option<Vec<usize>> = None;
 
     let mut i = 1;
@@ -110,6 +111,9 @@ fn main() {
             "--cn0" => {
                 cn0_flag = true;
             }
+            "--benchmark" => {
+                benchmark_flag = true;
+            }
             "--prn" => {
                 i += 1;
                 prn_filter = Some(
@@ -137,24 +141,251 @@ fn main() {
         qzss_flag = true;
     }
 
-    let file = file.unwrap_or_else(|| {
-        eprintln!(
-            "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug]",
-            args[0]
-        );
-        std::process::exit(1);
-    });
+    let file = if benchmark_flag {
+        file
+    } else {
+        Some(file.unwrap_or_else(|| {
+            eprintln!(
+                "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]",
+                args[0]
+            );
+            std::process::exit(1);
+        }))
+    };
 
-    let obs = Observation::from_hdf5(&file).unwrap_or_else(|e| {
-        eprintln!("error loading HDF5 file: {e}");
-        std::process::exit(1);
-    });
+    let obs = if let Some(ref f) = file {
+        Observation::from_hdf5(f).unwrap_or_else(|e| {
+            eprintln!("error loading HDF5 file: {e}");
+            std::process::exit(1);
+        })
+    } else {
+        // Benchmark mode without a data file — generate random noise.
+        // 500k samples per antenna is enough for 31 ms at 16 MHz, covering
+        // the longest code period (L1C/BeiDou = 20 ms with 2 epochs).
+        eprintln!("--benchmark without --file: using random data");
+        Observation::random(2, 16e6, 500_000)
+    };
 
     let n_ant = obs.config.num_antenna();
     let sampling_freq = obs.get_sampling_rate();
     eprintln!("timestamp:   {}", obs.timestamp);
     eprintln!("antennas:    {n_ant}");
     eprintln!("sample rate: {sampling_freq} Hz");
+
+    // --- Benchmark mode ---------------------------------------------------
+    if benchmark_flag {
+        use std::f64::consts::TAU;
+        use std::time::Instant;
+
+        #[derive(Serialize)]
+        struct BenchResult {
+            constellation: &'static str,
+            prns: usize,
+            setup_s: f64,
+            search_s: f64,
+            duration_s: f64,
+        }
+
+        /// Extract de-meaned f32 antenna data and pre-computed phasepoints
+        /// for the given number of samples.  This is the shared setup work
+        /// that all acquisition pipelines perform before the per-PRN search.
+        fn extract_ant_data(
+            obs: &Observation,
+            num_samples: usize,
+        ) -> Vec<(Vec<f32>, Vec<f64>)> {
+            let sampling_freq = obs.get_sampling_rate();
+            let n_ant = obs.config.num_antenna();
+            let phase_const = TAU / sampling_freq;
+            (0..n_ant)
+                .map(|ant_idx| {
+                    let bipolar = obs.get_antenna(ant_idx);
+                    let mean = bipolar.iter().sum::<f64>() / bipolar.len() as f64;
+                    let raw: Vec<f64> = bipolar.iter().map(|&v| v - mean).collect();
+                    let len = num_samples.min(raw.len());
+                    let signal_f32: Vec<f32> =
+                        raw[..len].iter().map(|&v| v as f32).collect();
+                    let phasepoints: Vec<f64> =
+                        (0..len).map(|i| phase_const * i as f64).collect();
+                    (signal_f32, phasepoints)
+                })
+                .collect()
+        }
+
+        let sampling_freq = obs.get_sampling_rate();
+        let samples_per_ms = sampling_freq / 1000.0;
+        let num_samples_per_ms = samples_per_ms as usize;
+
+        // Galileo / BeiDou / L1C code periods (chip count / chip rate).
+        const GAL_CODE_PERIOD: f64 = 4092.0 / 1.023e6; // 4 ms
+        const BDS_CODE_PERIOD: f64 = 10230.0 / 1.023e6; // 10 ms
+        const L1C_CODE_PERIOD: f64 = 10230.0 / 1.023e6; // 10 ms
+
+        let gal_samples_per_period =
+            (sampling_freq * GAL_CODE_PERIOD) as usize;
+        let bds_samples_per_period =
+            (sampling_freq * BDS_CODE_PERIOD) as usize;
+        let l1c_samples_per_period =
+            (sampling_freq * L1C_CODE_PERIOD) as usize;
+
+        struct BenchEntry {
+            name: &'static str,
+            num_samples: usize,      // for data extraction (setup)
+            prn: usize,
+            center_freq: f64,
+            search_band: f64,
+            samples_per_chunk: usize, // passed to single-PRN function
+        }
+
+        let entries: [BenchEntry; 6] = [
+            BenchEntry {
+                name: "GPS",
+                num_samples: 2 * num_samples_per_ms,
+                prn: 1,
+                center_freq: acquisition::GPS_IF,
+                search_band: acquisition::GPS_SEARCH_BAND,
+                samples_per_chunk: num_samples_per_ms,
+            },
+            BenchEntry {
+                name: "Galileo",
+                num_samples: 2 * gal_samples_per_period,
+                prn: 1,
+                center_freq: 4.092e6,
+                search_band: 6000.0,
+                samples_per_chunk: gal_samples_per_period,
+            },
+            BenchEntry {
+                name: "BeiDou",
+                num_samples: 2 * bds_samples_per_period,
+                prn: 1,
+                center_freq: 4.092e6,
+                search_band: 6000.0,
+                samples_per_chunk: bds_samples_per_period,
+            },
+            BenchEntry {
+                name: "SBAS",
+                num_samples: 2 * num_samples_per_ms,
+                prn: 120,
+                center_freq: sbas::SBAS_IF,
+                search_band: sbas::SBAS_SEARCH_BAND,
+                samples_per_chunk: num_samples_per_ms,
+            },
+            BenchEntry {
+                name: "QZSS",
+                num_samples: 2 * num_samples_per_ms,
+                prn: 184,
+                center_freq: qzss::QZSS_IF,
+                search_band: qzss::QZSS_SEARCH_BAND,
+                samples_per_chunk: num_samples_per_ms,
+            },
+            BenchEntry {
+                name: "L1C",
+                num_samples: 2 * l1c_samples_per_period,
+                prn: 1,
+                center_freq: l1c::L1C_IF,
+                search_band: l1c::L1C_SEARCH_BAND,
+                samples_per_chunk: l1c_samples_per_period,
+            },
+        ];
+
+        let mut results: Vec<BenchResult> = Vec::with_capacity(6);
+        let mut total_setup: f64 = 0.0;
+        let mut total_search: f64 = 0.0;
+
+        eprintln!("Running benchmark (one PRN per constellation, setup timed separately)...");
+
+        for entry in &entries {
+            eprintln!("  {} (PRN {})...", entry.name, entry.prn);
+
+            // --- setup ----------------------------------------------------
+            let setup_start = Instant::now();
+            let ant_data = extract_ant_data(&obs, entry.num_samples);
+            let setup_s = setup_start.elapsed().as_secs_f64();
+
+            // --- single-PRN search (antenna 0 only) -----------------------
+            let (signal_f32, phasepoints) = &ant_data[0];
+            let search_start = Instant::now();
+            match entry.name {
+                "GPS" => {
+                    acquisition::acquire_full(
+                        signal_f32, phasepoints, sampling_freq,
+                        entry.center_freq, entry.search_band,
+                        entry.prn, entry.samples_per_chunk,
+                    );
+                }
+                "Galileo" => {
+                    galileo::acquire_galileo_single(
+                        signal_f32, phasepoints, sampling_freq,
+                        entry.center_freq, entry.search_band,
+                        entry.prn, entry.samples_per_chunk,
+                    );
+                }
+                "BeiDou" => {
+                    beidou::acquire_beidou_single(
+                        signal_f32, phasepoints, sampling_freq,
+                        entry.center_freq, entry.search_band,
+                        entry.prn, entry.samples_per_chunk,
+                    );
+                }
+                "SBAS" => {
+                    sbas::acquire_sbas(
+                        signal_f32, phasepoints, sampling_freq,
+                        entry.center_freq, entry.search_band,
+                        entry.prn, entry.samples_per_chunk,
+                    );
+                }
+                "QZSS" => {
+                    qzss::acquire_qzss(
+                        signal_f32, phasepoints, sampling_freq,
+                        entry.center_freq, entry.search_band,
+                        entry.prn, entry.samples_per_chunk,
+                    );
+                }
+                "L1C" => {
+                    l1c::acquire_l1c_single(
+                        signal_f32, phasepoints, sampling_freq,
+                        entry.center_freq, entry.search_band,
+                        entry.prn, entry.samples_per_chunk,
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let search_s = search_start.elapsed().as_secs_f64();
+            let duration_s = setup_s + search_s;
+
+            eprintln!(
+                "    {}: setup={setup_s:.4}s  search={search_s:.4}s  total={duration_s:.4}s",
+                entry.name
+            );
+            total_setup += setup_s;
+            total_search += search_s;
+            results.push(BenchResult {
+                constellation: entry.name,
+                prns: 1,
+                setup_s,
+                search_s,
+                duration_s,
+            });
+        }
+
+        let total_prns: usize = results.iter().map(|r| r.prns).sum();
+        let total_duration_s = total_setup + total_search;
+        let acq_per_s = total_prns as f64 / total_search;
+        eprintln!(
+            "  Combined: startup={total_setup:.4}s  search={total_search:.4}s  total={total_duration_s:.4}s  acq/s={acq_per_s:.1}"
+        );
+
+        let bench_output = serde_json::to_string_pretty(&results).expect("JSON serialization failed");
+        if let Some(path) = &output_file {
+            std::fs::write(path, &bench_output).unwrap_or_else(|e| {
+                eprintln!("error writing output file {path}: {e}");
+                std::process::exit(1);
+            });
+            eprintln!("Wrote benchmark JSON to {path}");
+        } else {
+            println!("{bench_output}");
+        }
+        return;
+    }
 
     let any_acq = gps_flag || galileo_flag || beidou_flag || sbas_flag || l1c_flag || qzss_flag;
 

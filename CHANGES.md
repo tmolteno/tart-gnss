@@ -1,5 +1,20 @@
 # Changes
 
+## v0.2.1
+
+### Added
+
+- **`--benchmark` flag** — runs one PRN per constellation and reports
+  timing broken into startup (antenna-data extraction) and per-PRN
+  search, with an aggregate acquisitions/second score.  Useful for
+  profiling acquisition throughput without running a full all-PRN
+  sweep.
+
+### Changed
+
+- **CI workflow** — `actions/checkout` updated from v4 to v6;
+  `rust-lang/crates-io-auth-action` pinned from v1 to v1.0.4.
+
 ## v0.2.0
 
 ### Added
