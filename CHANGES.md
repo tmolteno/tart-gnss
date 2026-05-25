@@ -1,5 +1,31 @@
 # Changes
 
+## v0.3.0
+
+### Added
+
+- **`--version` flag** — prints the program name and version (`tart-gnss-acquire
+  v0.3.0`) then exits.
+- **Parallel frequency-bin correlation** — each single-PRN acquisition now
+  processes its ~41 Doppler frequency bins in parallel via `rayon::par_iter()`
+  instead of sequentially.  Combined with the existing PRN-level parallelism,
+  this gives a substantial speedup on multi-core systems, especially for the
+  larger FFT sizes (BeiDou B1C and GPS L1C at 320K samples).
+
+### Changed
+
+- **FFT plan hoisting** — in `acquisition.rs`, `galileo.rs`, `beidou.rs`, and
+  `l1c.rs`, forward and inverse FFT plans are now created once per call rather
+  than being regenerated inside each frequency-bin iteration (~41 redundant
+  plan constructions eliminated per PRN per antenna).  `sbas.rs` and `qzss.rs`
+  already had this optimisation and are unchanged.
+- **Extracted `src/correlate.rs`** — the identical ~80-line frequency-bin
+  correlation loop (IQ wipe-off, forward FFT, multiply by code conjugate,
+  inverse FFT, magnitude, argmax, second-peak search) previously duplicated
+  across all six constellation modules is now a single shared
+  `correlate_code()` function.  Each module's `acquire_*_single` function
+  shrinks from ~115 lines to ~55 lines.
+
 ## v0.2.1
 
 ### Added

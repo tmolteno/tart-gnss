@@ -5,6 +5,7 @@ mod acr;
 mod acquisition;
 mod beidou;
 mod config;
+mod correlate;
 mod galileo;
 mod l1c;
 mod observation;
@@ -122,6 +123,10 @@ fn main() {
                         .map(|s| s.trim().parse().expect("invalid integer in --prn list"))
                         .collect(),
                 );
+            }
+            "--version" => {
+                println!("tart-gnss-acquire v{}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
             }
             other => {
                 eprintln!("unknown argument: {other}");

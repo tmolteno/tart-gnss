@@ -54,6 +54,9 @@ tart-gnss-acquire --file data/observation.hdf --i 0 --j 1
 
 # Benchmark (single PRN per constellation, timed breakdown)
 tart-gnss-acquire --file data/observation.hdf --benchmark
+
+# Print version
+tart-gnss-acquire --version
 ```
 
 | Flag                      | Description                                         |
@@ -76,6 +79,7 @@ tart-gnss-acquire --file data/observation.hdf --benchmark
 | `--i IDX`                 | First antenna index (correlation mode)              |
 | `--j IDX`                 | Second antenna index (correlation mode)             |
 | `--benchmark`             | Single-PRN timing with startup/search breakdown     |
+| `--version`               | Print version and exit                              |
 
 ## JSON output format
 

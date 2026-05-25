@@ -15,6 +15,7 @@ use std::f64::consts::TAU;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::acquisition::{self, generate_ca_code_from_delay, gold_code_from_ca};
+use crate::correlate::correlate_code;
 use crate::observation::Observation;
 
 /// Number of SBAS PRNs (120..=158).
@@ -164,11 +165,7 @@ pub fn acquire_sbas(
         )
     });
 
-    // --- Pre-allocated working buffers ------------------------------------
-    let mut iq_buf: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); num_samples];
-    let mut corr_buf: Vec<f32> = vec![0.0; num_samples];
-
-    // --- Local code replica ------------------------------------------------
+    // --- Local code replica (FFT + conjugate once) -------------------------
     let code = sbas_gold_code(samples_per_ms, prn, epochs_available);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
@@ -179,74 +176,27 @@ pub fn acquire_sbas(
         *c = c.conj();
     }
 
-    // --- Per-frequency-bin correlation -------------------------------------
-    let mut best_peak: f32 = f32::NEG_INFINITY;
-    let mut best_freq_idx: usize = 0;
-    let mut best_codephase: usize = 0;
-    let mut best_corr: Vec<f32> = Vec::new();
+    // --- Parallel frequency-bin correlation --------------------------------
+    let peak = correlate_code(
+        signal_f32,
+        phasepoints,
+        &code_complex,
+        &fc,
+        num_samples,
+        samples_per_chunk,
+        sampling_freq,
+        fft,
+        ifft,
+    );
 
-    for (fi, &freq) in fc.iter().enumerate() {
-        for (idx, (&p, &s)) in phasepoints.iter().zip(signal_f32.iter()).enumerate() {
-            let phase = (p * freq) as f32;
-            iq_buf[idx] = Complex::new(phase.cos(), phase.sin()) * Complex::new(s, 0.0);
-        }
-
-        fft.process(&mut iq_buf);
-
-        for (iq_elem, &code_elem) in iq_buf.iter_mut().zip(code_complex.iter()) {
-            *iq_elem *= code_elem;
-        }
-
-        ifft.process(&mut iq_buf);
-
-        let scale = 1.0 / (num_samples as f32).sqrt();
-        for (idx, c) in iq_buf.iter().enumerate() {
-            corr_buf[idx] = c.norm() * scale;
-        }
-
-        let (peak_idx, &peak_val) = corr_buf
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .unwrap();
-
-        if peak_val > best_peak {
-            best_peak = peak_val;
-            best_freq_idx = fi;
-            best_codephase = peak_idx;
-            best_corr = corr_buf.clone();
-        }
-    }
-
-    // --- Find second peak (>1 chip from main peak) -------------------------
-    let chip_width = (sampling_freq / 1.023e6).ceil() as usize;
-    let main_codephase = best_codephase % samples_per_chunk;
-    let mut second_peak: f32 = f32::NEG_INFINITY;
-
-    for (idx, &val) in best_corr.iter().enumerate() {
-        let idx_cp = idx % samples_per_chunk;
-        let dist = if idx_cp >= main_codephase {
-            (idx_cp - main_codephase).min(samples_per_chunk - idx_cp + main_codephase)
-        } else {
-            (main_codephase - idx_cp).min(samples_per_chunk - main_codephase + idx_cp)
-        };
-        if dist > chip_width && val > second_peak {
-            second_peak = val;
-        }
-    }
-
-    if second_peak <= 0.0 {
-        second_peak = 1e-6;
-    }
-
-    let codephase_in_samples = best_codephase % samples_per_chunk;
+    let codephase_in_samples = peak.best_codephase % samples_per_chunk;
     let codephase_frac = codephase_in_samples as f64 / samples_per_ms;
-    let frequency = fc[best_freq_idx] - center_freq;
+    let frequency = fc[peak.best_freq_idx] - center_freq;
 
     SbasAcquisitionResult {
         prn,
-        signal_strength: best_peak as f64,
-        second_peak: second_peak as f64,
+        signal_strength: peak.best_peak as f64,
+        second_peak: peak.second_peak as f64,
         codephase_frac,
         frequency,
     }
