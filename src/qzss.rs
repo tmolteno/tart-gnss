@@ -94,6 +94,7 @@ pub struct QzssPrnResult {
 /// Collection of QZSS acquisition results for all PRNs.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct QzssAllAcquisitionOutput {
+    pub antenna_numbers: Vec<usize>,
     pub results: Vec<QzssPrnResult>,
 }
 
@@ -211,13 +212,13 @@ pub fn acquire_qzss(
 
 /// Search for all QZSS L1 C/A PRNs across selected antennas.
 ///
-/// If `ant_filter` is `Some(idx)`, only that antenna is used; otherwise all
+/// If `ant_filter` is `Some(antennas)`, only those antennas are used; otherwise all
 /// antennas are searched.  PRN processing is parallelised via rayon.
 pub fn acquire_all_qzss(
     obs: &Observation,
     center_freq: f64,
     search_band: f64,
-    ant_filter: Option<usize>,
+    ant_filter: Option<Vec<usize>>,
     prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
@@ -228,11 +229,7 @@ pub fn acquire_all_qzss(
     let num_samples_per_ms = samples_per_ms as usize;
     let num_samples = 2 * num_samples_per_ms;
 
-    let ant_indices: Vec<usize> = if let Some(ant) = ant_filter {
-        vec![ant]
-    } else {
-        (0..n_ant).collect()
-    };
+    let ant_indices: Vec<usize> = ant_filter.unwrap_or_else(|| (0..n_ant).collect());
 
     // Pre-extract, de-mean, convert to f32, and pre-compute phasepoints.
     let phase_const = TAU / sampling_freq;
@@ -354,7 +351,7 @@ pub fn acquire_all_qzss(
 
     results.sort_by(|a, b| a.sv.cmp(&b.sv));
 
-    QzssAllAcquisitionOutput { results }
+    QzssAllAcquisitionOutput { antenna_numbers: ant_indices, results }
 }
 
 #[cfg(test)]

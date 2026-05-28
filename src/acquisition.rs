@@ -61,6 +61,7 @@ pub struct GpsPrnResult {
 /// Collection of GPS acquisition results for all PRNs, grouped by PRN.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GpsAllAcquisitionOutput {
+    pub antenna_numbers: Vec<usize>,
     pub results: Vec<GpsPrnResult>,
 }
 
@@ -244,7 +245,7 @@ pub fn acquire_full(
 
 /// Search for all GPS L1 C/A PRNs across selected antennas.
 ///
-/// If `ant_filter` is `Some(idx)`, only that antenna is used; otherwise all
+/// If `ant_filter` is `Some(antennas)`, only those antennas are used; otherwise all
 /// antennas are searched.  PRN processing is parallelised via rayon.
 ///
 /// For each PRN, per-antenna signal strengths, code-phase offsets, and
@@ -253,7 +254,7 @@ pub fn acquire_all_gps(
     obs: &Observation,
     center_freq: f64,
     search_band: f64,
-    ant_filter: Option<usize>,
+    ant_filter: Option<Vec<usize>>,
     prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
@@ -265,11 +266,8 @@ pub fn acquire_all_gps(
     // Use 2 ms of data per antenna (matches the single-PRN mode).
     let num_samples = 2 * num_samples_per_ms;
 
-    let ant_indices: Vec<usize> = if let Some(ant) = ant_filter {
-        vec![ant]
-    } else {
-        (0..n_ant).collect()
-    };
+    let ant_indices: Vec<usize> = ant_filter
+        .unwrap_or_else(|| (0..n_ant).collect());
 
     // Pre-extract and de-mean all antenna data, convert to f32 once.
     let ant_data: Vec<(Vec<f32>, Vec<f64>)> = ant_indices
@@ -384,7 +382,7 @@ pub fn acquire_all_gps(
 
     results.sort_by(|a, b| a.sv.cmp(&b.sv));
 
-    GpsAllAcquisitionOutput { results }
+    GpsAllAcquisitionOutput { antenna_numbers: ant_indices, results }
 }
 
 #[cfg(test)]

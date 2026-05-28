@@ -76,6 +76,7 @@ pub struct L1CPrnResult {
 /// Collection of acquisition results for all GPS L1C SVs, grouped by PRN.
 #[derive(Debug, Clone, Serialize)]
 pub struct L1CAllAcquisitionOutput {
+    pub antenna_numbers: Vec<usize>,
     pub results: Vec<L1CPrnResult>,
 }
 
@@ -171,7 +172,7 @@ pub fn acquire_l1c_single(
 
 /// Search for all 63 GPS L1C SVs across selected antennas.
 ///
-/// If `ant_filter` is `Some(idx)`, only that antenna is used; otherwise all
+/// If `ant_filter` is `Some(antennas)`, only those antennas are used; otherwise all
 /// antennas are searched.  PRN processing is parallelised via rayon.
 ///
 /// For each PRN, per-antenna signal strengths, code-phase offsets, and
@@ -180,7 +181,7 @@ pub fn acquire_all_l1c(
     obs: &Observation,
     center_freq: f64,
     search_band: f64,
-    ant_filter: Option<usize>,
+    ant_filter: Option<Vec<usize>>,
     prn_filter: Option<&[usize]>,
     debug: bool,
     cn0: bool,
@@ -192,11 +193,7 @@ pub fn acquire_all_l1c(
     let num_samples = 2 * num_samples_per_code_period;
 
     // Which antennas to search
-    let ant_indices: Vec<usize> = if let Some(ant) = ant_filter {
-        vec![ant]
-    } else {
-        (0..n_ant).collect()
-    };
+    let ant_indices: Vec<usize> = ant_filter.unwrap_or_else(|| (0..n_ant).collect());
 
     // Pre-extract and de-mean all antenna data, convert to f32 once
     let ant_data: Vec<(Vec<f32>, Vec<f64>)> = ant_indices
@@ -314,7 +311,7 @@ pub fn acquire_all_l1c(
     // Sort by SV label to maintain ordering
     results.sort_by(|a, b| a.sv.cmp(&b.sv));
 
-    L1CAllAcquisitionOutput { results }
+    L1CAllAcquisitionOutput { antenna_numbers: ant_indices, results }
 }
 
 #[cfg(test)]

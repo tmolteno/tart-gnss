@@ -45,7 +45,7 @@ fn main() {
     let mut l1c_flag = false;
     let mut qzss_flag = false;
     let mut all_flag = false;
-    let mut single_ant: Option<usize> = None;
+    let mut ant_list: Option<Vec<usize>> = None;
     let mut filter_phase_mad: Option<f64> = None;
     let mut filter_freq_mad: Option<f64> = None;
     let mut output_file: Option<String> = None;
@@ -92,7 +92,12 @@ fn main() {
             }
             "--ant" => {
                 i += 1;
-                single_ant = Some(args[i].parse().expect("invalid integer for --ant"));
+                ant_list = Some(
+                    args[i]
+                        .split(',')
+                        .map(|s| s.trim().parse().expect("invalid integer in --ant list"))
+                        .collect(),
+                );
             }
             "--filter-phase-mad" => {
                 i += 1;
@@ -151,7 +156,7 @@ fn main() {
     } else {
         Some(file.unwrap_or_else(|| {
             eprintln!(
-                "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <idx>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]",
+                "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]",
                 args[0]
             );
             std::process::exit(1);
@@ -395,11 +400,13 @@ fn main() {
     let any_acq = gps_flag || galileo_flag || beidou_flag || sbas_flag || l1c_flag || qzss_flag;
 
     if any_acq {
-        // Validate --ant index once for all acquisition modes
-        if let Some(ant) = single_ant {
-            if ant >= n_ant {
-                eprintln!("antenna index {ant} out of range (have {n_ant})");
-                std::process::exit(1);
+        // Validate --ant indices once for all acquisition modes
+        if let Some(ref ants) = ant_list {
+            for &ant in ants {
+                if ant >= n_ant {
+                    eprintln!("antenna index {ant} out of range (have {n_ant})");
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -423,7 +430,7 @@ fn main() {
                 &obs,
                 acquisition::GPS_IF,
                 acquisition::GPS_SEARCH_BAND,
-                single_ant,
+                ant_list.clone(),
                 prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
@@ -440,7 +447,7 @@ fn main() {
                 &obs,
                 galileo_if,
                 galileo_search_band,
-                single_ant,
+                ant_list.clone(),
                 prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
@@ -457,7 +464,7 @@ fn main() {
                 &obs,
                 beidou_if,
                 beidou_search_band,
-                single_ant,
+                ant_list.clone(),
                 prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
@@ -475,7 +482,7 @@ fn main() {
                 &obs,
                 sbas::SBAS_IF,
                 sbas::SBAS_SEARCH_BAND,
-                single_ant,
+                ant_list.clone(),
                 prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
@@ -490,7 +497,7 @@ fn main() {
                 &obs,
                 l1c::L1C_IF,
                 l1c::L1C_SEARCH_BAND,
-                single_ant,
+                ant_list.clone(),
                 prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,
@@ -508,7 +515,7 @@ fn main() {
                 &obs,
                 qzss::QZSS_IF,
                 qzss::QZSS_SEARCH_BAND,
-                single_ant,
+                ant_list.clone(),
                 prn_filter.as_deref(),
                 debug_flag,
                 cn0_flag,

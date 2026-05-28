@@ -1,5 +1,15 @@
 # Changes
 
+## v0.3.1
+
+### Changed
+
+- **`--ant` accepts comma-separated lists** — `--ant` now takes a
+  comma-separated list of antenna indices (e.g. `--ant 0,2,5`) instead of a
+  single index.  The old single-index form (`--ant 0`) still works.  The
+  `ant_filter` parameter in all `acquire_all_*` functions changed from
+  `Option<usize>` to `Option<Vec<usize>>`.
+
 ## v0.3.0
 
 ### Added
