@@ -357,6 +357,7 @@ pub fn acquire_all_qzss(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
 
     #[test]
     fn test_generate_qzss_ca_code_length() {
@@ -446,5 +447,38 @@ mod tests {
                 "PRN {prn}: first 10 chips mismatch"
             );
         }
+    }
+
+    #[test]
+    fn test_acquire_qzss_recovers_delay() {
+        let fs = 1.023e6;
+        let period = (fs / 1000.0) as usize; // 1023
+        let code = qzss_gold_code(period as f64, 184, 2.0);
+
+        let delay = 250usize;
+        let sig = synth_signal(&code, period, delay, 0.0, fs, 0.05, 51);
+        let r = acquire_qzss(
+            &sig, &phasepoints(fs, sig.len()), fs, 0.0, 3000.0, 184, period,
+        );
+        let recovered = (r.codephase_frac * period as f64).round() as usize;
+        assert_eq!(recovered, expected_recovered_sample(period, delay));
+        assert!(r.codephase_frac >= 0.0 && r.codephase_frac < 1.0);
+    }
+
+    #[test]
+    fn test_acquire_qzss_noise_contrast() {
+        let fs = 1.023e6;
+        let period = (fs / 1000.0) as usize;
+        let code = qzss_gold_code(period as f64, 184, 2.0);
+        let n = code.len();
+        let injected = synth_signal(&code, period, 300, 0.0, fs, 0.05, 52);
+        let r_inj = acquire_qzss(
+            &injected, &phasepoints(fs, n), fs, 0.0, 3000.0, 184, period,
+        );
+        let pure_noise: Vec<f32> = (0..n).map(|i| ((i as f64 * 3.9).sin() * 0.05) as f32).collect();
+        let r_noise = acquire_qzss(
+            &pure_noise, &phasepoints(fs, n), fs, 0.0, 3000.0, 184, period,
+        );
+        assert!(r_inj.signal_strength > 10.0 * r_noise.signal_strength);
     }
 }
