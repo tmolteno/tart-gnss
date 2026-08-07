@@ -388,6 +388,8 @@ pub fn acquire_all_gps(
 #[cfg(test)]
 mod tests {
     use super::*;
+use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
+
 
     #[test]
     fn test_generate_ca_code_length() {
@@ -407,5 +409,87 @@ mod tests {
     fn test_gold_code_length() {
         let code = gold_code(1023.0, 1, 2.0);
         assert_eq!(code.len(), 2046);
+    }
+
+    #[test]
+    fn test_acquire_full_recovers_delay_and_doppler() {
+        let fs = 2.046e6; // 2046 samples/ms
+        let period = (fs / 1000.0) as usize;
+        let code = gold_code(period as f64, 1, 2.0); // 2 epochs
+
+        let delay = 500usize;
+        let f0 = 1200.0f64;
+        let sig = synth_signal(&code, period, delay, f0, fs, 0.05, 1);
+        let r = acquire_full(
+            &sig, &phasepoints(fs, sig.len()), fs, 0.0, 3000.0, 1, period,
+        );
+
+        let recovered_sample =
+            (r.codephase_frac * period as f64).round() as usize;
+        assert_eq!(
+            recovered_sample, expected_recovered_sample(period, delay),
+            "GPS code-phase delay not recovered"
+        );
+        assert!(
+            (r.frequency.abs() - f0.abs()).abs() <= 250.0,
+            "doppler {} not near |f0|={}", r.frequency, f0
+        );
+        assert!(r.codephase_frac >= 0.0 && r.codephase_frac < 1.0);
+    }
+
+    #[test]
+    fn test_acquire_full_signal_strength_contrast() {
+        let fs = 2.046e6;
+        let period = (fs / 1000.0) as usize;
+        let code = gold_code(period as f64, 1, 2.0);
+        let n = code.len();
+
+        let injected = synth_signal(&code, period, 123, 0.0, fs, 0.05, 2);
+        let r_inj = acquire_full(&injected, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period);
+
+        let pure_noise: Vec<f32> = (0..n)
+            .map(|i| ((i as f64 * 3.3).sin() * 0.05) as f32)
+            .collect();
+        let r_noise = acquire_full(&pure_noise, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period);
+
+        assert!(
+            r_inj.signal_strength > 10.0 * r_noise.signal_strength,
+            "injected {0} should dominate noise {1}",
+            r_inj.signal_strength, r_noise.signal_strength
+        );
+    }
+
+    #[test]
+    fn test_acquire_all_gps_prn_and_antenna_filters() {
+        use crate::config::Config;
+        use crate::observation::Observation;
+
+        let fs = 2.046e6;
+        let samples = 2 * (fs / 1000.0) as usize; // 2 ms
+        // Two antennas, deterministic 0/1 data of sufficient length.
+        let data: Vec<Vec<u8>> = (0..2)
+            .map(|a| (0..samples).map(|i| ((i + a * 31) % 2) as u8).collect())
+            .collect();
+        let cfg = Config::from_json(&format!(
+            r#"{{"num_antenna":2,"sampling_frequency":{fs}}}"#
+        ))
+        .unwrap();
+        let obs = Observation::new(chrono::Utc::now(), cfg, data);
+
+        let out = acquire_all_gps(
+            &obs, GPS_IF, GPS_SEARCH_BAND,
+            Some(vec![0]), // ant filter
+            Some(&[2, 5, 9]),
+            false, false,
+        );
+        assert_eq!(out.antenna_numbers, vec![0]);
+        assert_eq!(out.results.len(), 3);
+        assert_eq!(out.results[0].sv, "GPS02");
+        assert_eq!(out.results[1].sv, "GPS05");
+        assert_eq!(out.results[2].sv, "GPS09");
+        assert_eq!(out.results[0].strengths.len(), 1); // one antenna
+        // Single antenna -> no median/MAD
+        assert!(out.results[0].phase_median.is_none());
+        assert!(out.results[0].freq_mad.is_none());
     }
 }
