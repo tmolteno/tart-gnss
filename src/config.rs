@@ -34,3 +34,41 @@ impl Config {
         self.sampling_frequency
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_valid() {
+        let c = Config::from_json(
+            r#"{"num_antenna":24,"sampling_frequency":20000000.0}"#,
+        )
+        .unwrap();
+        assert_eq!(c.num_antenna(), 24);
+        assert_eq!(c.sampling_frequency(), 20_000_000.0);
+    }
+
+    #[test]
+    fn test_parse_ignores_extra_fields() {
+        // Real TART configs carry many extra keys; they must be ignored.
+        let c = Config::from_json(
+            r#"{"num_antenna":4,"sampling_frequency":16e6,"instrument":"TART","latitude":-45.0}"#,
+        )
+        .unwrap();
+        assert_eq!(c.num_antenna(), 4);
+        assert_eq!(c.sampling_frequency(), 16e6);
+    }
+
+    #[test]
+    fn test_parse_missing_required_field_fails() {
+        assert!(Config::from_json(r#"{"sampling_frequency":16e6}"#).is_err());
+        assert!(Config::from_json(r#"{"num_antenna":2}"#).is_err());
+    }
+
+    #[test]
+    fn test_parse_malformed_json_fails() {
+        assert!(Config::from_json("not json").is_err());
+        assert!(Config::from_json("").is_err());
+    }
+}
