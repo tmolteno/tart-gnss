@@ -360,6 +360,7 @@ pub fn acquire_all_galileo(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
 
     #[test]
     fn test_generate_e1c_code_length() {
@@ -388,5 +389,40 @@ mod tests {
             let code = generate_e1c_code(prn);
             assert_eq!(code.len(), GALILEO_E1_CHIPS, "PRN {prn} wrong length");
         }
+    }
+
+    #[test]
+    fn test_acquire_galileo_single_recovers_delay() {
+        let fs = 1.023e6; // one sample per chip; 4092 chips per 4 ms period
+        let period = GALILEO_E1_CHIPS;
+        let code = e1c_code_resampled(period as f64, 1, 2.0); // 2 epochs
+
+        let delay = 900usize;
+        let sig = synth_signal(&code, period, delay, 0.0, fs, 0.05, 11);
+        let r = acquire_galileo_single(
+            &sig, &phasepoints(fs, sig.len()), fs, 0.0, 3000.0, 1, period,
+        );
+        let recovered = (r.codephase_frac * period as f64).round() as usize;
+        assert_eq!(recovered, expected_recovered_sample(period, delay));
+        assert!(r.codephase_frac >= 0.0 && r.codephase_frac < 1.0);
+        assert!(r.signal_strength > 0.0);
+    }
+
+    #[test]
+    fn test_acquire_galileo_single_noise_contrast() {
+        let fs = 1.023e6;
+        let period = GALILEO_E1_CHIPS;
+        let code = e1c_code_resampled(period as f64, 1, 2.0);
+        let n = code.len();
+
+        let injected = synth_signal(&code, period, 600, 0.0, fs, 0.05, 12);
+        let r_inj = acquire_galileo_single(
+            &injected, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+        );
+        let pure_noise: Vec<f32> = (0..n).map(|i| ((i as f64 * 2.7).sin() * 0.05) as f32).collect();
+        let r_noise = acquire_galileo_single(
+            &pure_noise, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+        );
+        assert!(r_inj.signal_strength > 10.0 * r_noise.signal_strength);
     }
 }
