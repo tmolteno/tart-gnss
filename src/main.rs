@@ -13,6 +13,9 @@ mod qzss;
 mod sbas;
 mod stats;
 
+#[cfg(test)]
+mod testutil;
+
 use observation::Observation;
 use serde::Serialize;
 
