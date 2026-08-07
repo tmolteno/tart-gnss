@@ -310,6 +310,7 @@ pub fn acquire_all_beidou(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
     use beidou_codes::{generate_b1c_pilot_code, BEIDOU_B1C_CHIPS};
 
     #[test]
@@ -343,5 +344,38 @@ mod tests {
                 "PRN {prn} wrong pilot code length"
             );
         }
+    }
+
+    #[test]
+    fn test_acquire_beidou_single_recovers_delay() {
+        let fs = 1.023e6; // one sample per chip; 10230 chips per 10 ms period
+        let period = BEIDOU_B1C_CHIPS;
+        let code = b1c_code_resampled(period as f64, 1, 2.0);
+
+        let delay = 3000usize;
+        let sig = synth_signal(&code, period, delay, 0.0, fs, 0.05, 21);
+        let r = acquire_beidou_single(
+            &sig, &phasepoints(fs, sig.len()), fs, 0.0, 3000.0, 1, period,
+        );
+        let recovered = (r.codephase_frac * period as f64).round() as usize;
+        assert_eq!(recovered, expected_recovered_sample(period, delay));
+        assert!(r.codephase_frac >= 0.0 && r.codephase_frac < 1.0);
+    }
+
+    #[test]
+    fn test_acquire_beidou_single_noise_contrast() {
+        let fs = 1.023e6;
+        let period = BEIDOU_B1C_CHIPS;
+        let code = b1c_code_resampled(period as f64, 1, 2.0);
+        let n = code.len();
+        let injected = synth_signal(&code, period, 1000, 0.0, fs, 0.05, 22);
+        let r_inj = acquire_beidou_single(
+            &injected, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+        );
+        let pure_noise: Vec<f32> = (0..n).map(|i| ((i as f64 * 1.9).sin() * 0.05) as f32).collect();
+        let r_noise = acquire_beidou_single(
+            &pure_noise, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+        );
+        assert!(r_inj.signal_strength > 10.0 * r_noise.signal_strength);
     }
 }
