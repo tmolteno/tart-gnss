@@ -135,3 +135,73 @@ pub(crate) fn correlate_code(
         best_codephase,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acquisition::gold_code;
+    use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
+    use rustfft::FftPlanner;
+
+    /// Build the pre-FFT'd, conjugated code replica exactly as the
+    /// acquisition modules do.
+    fn code_fft_conj(fft: Arc<dyn Fft<f32>>, code: &[f64]) -> Vec<Complex<f32>> {
+        let mut cc: Vec<Complex<f32>> =
+            code.iter().map(|&v| Complex::new(v as f32, 0.0)).collect();
+        fft.process(&mut cc);
+        for c in &mut cc {
+            *c = c.conj();
+        }
+        cc
+    }
+
+    #[test]
+    fn test_correlate_code_recovers_delay() {
+        let period = 256usize;
+        let code = gold_code(period as f64, 1, 1.0); // 256-sample GPS C/A code
+        let fs = 1.023e6;
+
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(period);
+        let ifft = planner.plan_fft_inverse(period);
+
+        let cc = code_fft_conj(fft.clone(), &code);
+
+        for delay in [0usize, 50, 128, 200] {
+            let sig = synth_signal(&code, period, delay, 0.0, fs, 0.05, 42);
+            // phasepoints + fc=[0.0] means carrier wipe is identity.
+            let peak = correlate_code(
+                &sig, &phasepoints(fs, period), &cc, &[0.0],
+                period, period, fs, fft.clone(), ifft.clone(),
+            );
+            let recovered = peak.best_codephase % period;
+            assert_eq!(
+                recovered, expected_recovered_sample(period, delay),
+                "delay {delay} not recovered correctly"
+            );
+            assert_eq!(peak.best_freq_idx, 0);
+            assert!(peak.best_peak > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_correlate_code_noise_only_bounded() {
+        let period = 256usize;
+        let code = gold_code(period as f64, 1, 1.0);
+        let fs = 1.023e6;
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(period);
+        let ifft = planner.plan_fft_inverse(period);
+        let cc = code_fft_conj(fft.clone(), &code);
+
+        let sig = synth_signal(&code, period, 0, 0.0, fs, 0.0, 7);
+        let peak = correlate_code(
+            &sig, &phasepoints(fs, period), &cc, &[0.0],
+            period, period, fs, fft, ifft,
+        );
+        assert!(peak.best_peak > 0.0);
+        assert!(peak.best_peak.is_finite());
+        assert!(peak.second_peak > 0.0);
+        assert!(peak.best_codephase < period);
+    }
+}
