@@ -286,4 +286,58 @@ mod tests {
         let c = obs.correlate(0, 1);
         assert!((c + 1.0).abs() < 1e-12, "expected -1.0, got {c}");
     }
+
+    #[test]
+    fn test_get_antenna_bipolar_mapping() {
+        let data = vec![vec![0, 1, 0, 1], vec![1, 1, 0, 0]];
+        let cfg = Config::from_json(r#"{"num_antenna":2,"sampling_frequency":16e6}"#).unwrap();
+        let obs = Observation::new(chrono::Utc::now(), cfg, data);
+        assert_eq!(obs.get_antenna(0), vec![-1.0, 1.0, -1.0, 1.0]);
+        assert_eq!(obs.get_antenna(1), vec![1.0, 1.0, -1.0, -1.0]);
+        assert_eq!(obs.get_sampling_rate(), 16e6);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_get_antenna_out_of_range_panics() {
+        let data = vec![vec![0u8, 1]];
+        let cfg = Config::from_json(r#"{"num_antenna":1,"sampling_frequency":16e6}"#).unwrap();
+        let obs = Observation::new(chrono::Utc::now(), cfg, data);
+        obs.get_antenna(1);
+    }
+
+    #[test]
+    fn test_get_means() {
+        // antenna 0: [0,0,0,1] -> sum 1, avg 0.25, *2-1 = -0.5
+        // antenna 1: [1,1,1,1] -> avg 1.0, *2-1 = 1.0
+        let data = vec![vec![0u8, 0, 0, 1], vec![1, 1, 1, 1]];
+        let cfg = Config::from_json(r#"{"num_antenna":2,"sampling_frequency":16e6}"#).unwrap();
+        let obs = Observation::new(chrono::Utc::now(), cfg, data);
+        let means = obs.get_means();
+        assert_eq!(means.len(), 2);
+        assert!((means[0] - (-0.5)).abs() < 1e-12);
+        assert!((means[1] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_correlate_length_mismatch_panics() {
+        // Different sample counts -> panic on length mismatch.
+        let data = vec![vec![0u8, 1, 0], vec![1, 1]];
+        let cfg = Config::from_json(r#"{"num_antenna":2,"sampling_frequency":16e6}"#).unwrap();
+        let obs = Observation::new(chrono::Utc::now(), cfg, data);
+        obs.correlate(0, 1);
+    }
+
+    #[test]
+    fn test_random_dimensions() {
+        let obs = Observation::random(3, 16e6, 1000);
+        assert_eq!(obs.config.num_antenna(), 3);
+        assert_eq!(obs.data.len(), 3);
+        for ant in &obs.data {
+            assert_eq!(ant.len(), 1000);
+            assert!(ant.iter().all(|&b| b == 0 || b == 1));
+        }
+        assert_eq!(obs.get_sampling_rate(), 16e6);
+    }
 }
