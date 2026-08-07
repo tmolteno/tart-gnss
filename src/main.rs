@@ -35,114 +35,186 @@ struct CombinedOutput {
     qzss: Option<qzss::QzssAllAcquisitionOutput>,
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+/// All CLI options parsed from the command line.
+#[derive(Debug, Default)]
+struct ParsedArgs {
+    file: Option<String>,
+    antenna_i: Option<usize>,
+    antenna_j: Option<usize>,
+    gps_flag: bool,
+    galileo_flag: bool,
+    beidou_flag: bool,
+    sbas_flag: bool,
+    l1c_flag: bool,
+    qzss_flag: bool,
+    all_flag: bool,
+    ant_list: Option<Vec<usize>>,
+    filter_phase_mad: Option<f64>,
+    filter_freq_mad: Option<f64>,
+    output_file: Option<String>,
+    debug_flag: bool,
+    cn0_flag: bool,
+    benchmark_flag: bool,
+    prn_filter: Option<Vec<usize>>,
+    version_flag: bool,
+}
 
-    let mut file: Option<String> = None;
-    let mut antenna_i: Option<usize> = None;
-    let mut antenna_j: Option<usize> = None;
-    let mut gps_flag = false;
-    let mut galileo_flag = false;
-    let mut beidou_flag = false;
-    let mut sbas_flag = false;
-    let mut l1c_flag = false;
-    let mut qzss_flag = false;
-    let mut all_flag = false;
-    let mut ant_list: Option<Vec<usize>> = None;
-    let mut filter_phase_mad: Option<f64> = None;
-    let mut filter_freq_mad: Option<f64> = None;
-    let mut output_file: Option<String> = None;
-    let mut debug_flag = false;
-    let mut cn0_flag = false;
-    let mut benchmark_flag = false;
-    let mut prn_filter: Option<Vec<usize>> = None;
+/// Read the value following a flag, advancing `i`, or return an error if absent.
+fn flag_value<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, String> {
+    if *i + 1 >= args.len() {
+        return Err(format!("missing value for {flag}"));
+    }
+    *i += 1;
+    Ok(args[*i].as_str())
+}
 
+/// Parse command-line args (excluding the program name in `args[0]`), matching
+/// the original `main` loop. Returns an error string on bad input.
+fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
+    let mut p = ParsedArgs::default();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--file" => {
-                i += 1;
-                file = Some(args[i].clone());
+                let v = flag_value(args, &mut i, "--file")?;
+                p.file = Some(v.to_string());
             }
             "--i" => {
-                i += 1;
-                antenna_i = Some(args[i].parse().expect("invalid integer for --i"));
+                let v = flag_value(args, &mut i, "--i")?;
+                p.antenna_i = Some(v.parse().map_err(|_| format!("invalid integer for --i: {v}"))?);
             }
             "--j" => {
-                i += 1;
-                antenna_j = Some(args[i].parse().expect("invalid integer for --j"));
+                let v = flag_value(args, &mut i, "--j")?;
+                p.antenna_j = Some(v.parse().map_err(|_| format!("invalid integer for --j: {v}"))?);
             }
-            "--gps" => {
-                gps_flag = true;
-            }
-            "--galileo" => {
-                galileo_flag = true;
-            }
-            "--beidou" => {
-                beidou_flag = true;
-            }
-            "--sbas" => {
-                sbas_flag = true;
-            }
-            "--l1c" => {
-                l1c_flag = true;
-            }
-            "--qzss" => {
-                qzss_flag = true;
-            }
-            "--all" => {
-                all_flag = true;
-            }
+            "--gps" => p.gps_flag = true,
+            "--galileo" => p.galileo_flag = true,
+            "--beidou" => p.beidou_flag = true,
+            "--sbas" => p.sbas_flag = true,
+            "--l1c" => p.l1c_flag = true,
+            "--qzss" => p.qzss_flag = true,
+            "--all" => p.all_flag = true,
             "--ant" => {
-                i += 1;
-                ant_list = Some(
-                    args[i]
-                        .split(',')
-                        .map(|s| s.trim().parse().expect("invalid integer in --ant list"))
-                        .collect(),
+                let v = flag_value(args, &mut i, "--ant")?;
+                p.ant_list = Some(
+                    v.split(',')
+                        .map(|s| s.trim().parse().map_err(|_| format!("invalid integer in --ant: {s}")))
+                        .collect::<Result<Vec<_>, _>>()?,
                 );
             }
             "--filter-phase-mad" => {
-                i += 1;
-                filter_phase_mad = Some(args[i].parse().expect("invalid float for --filter-phase-mad"));
+                let v = flag_value(args, &mut i, "--filter-phase-mad")?;
+                p.filter_phase_mad = Some(v.parse().map_err(|_| format!("invalid float for --filter-phase-mad: {v}"))?);
             }
             "--filter-freq-mad" => {
-                i += 1;
-                filter_freq_mad = Some(args[i].parse().expect("invalid float for --filter-freq-mad"));
+                let v = flag_value(args, &mut i, "--filter-freq-mad")?;
+                p.filter_freq_mad = Some(v.parse().map_err(|_| format!("invalid float for --filter-freq-mad: {v}"))?);
             }
             "--output" => {
-                i += 1;
-                output_file = Some(args[i].clone());
+                let v = flag_value(args, &mut i, "--output")?;
+                p.output_file = Some(v.to_string());
             }
-            "--debug" => {
-                debug_flag = true;
-            }
-            "--cn0" => {
-                cn0_flag = true;
-            }
-            "--benchmark" => {
-                benchmark_flag = true;
-            }
+            "--debug" => p.debug_flag = true,
+            "--cn0" => p.cn0_flag = true,
+            "--benchmark" => p.benchmark_flag = true,
             "--prn" => {
-                i += 1;
-                prn_filter = Some(
-                    args[i]
-                        .split(',')
-                        .map(|s| s.trim().parse().expect("invalid integer in --prn list"))
-                        .collect(),
+                let v = flag_value(args, &mut i, "--prn")?;
+                p.prn_filter = Some(
+                    v.split(',')
+                        .map(|s| s.trim().parse().map_err(|_| format!("invalid integer in --prn: {s}")))
+                        .collect::<Result<Vec<_>, _>>()?,
                 );
             }
-            "--version" => {
-                println!("tart-gnss-acquire v{}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
-            }
-            other => {
-                eprintln!("unknown argument: {other}");
-                std::process::exit(1);
-            }
+            "--version" => p.version_flag = true,
+            other => return Err(format!("unknown argument: {other}")),
         }
         i += 1;
     }
+    Ok(p)
+}
+
+fn print_usage(prog: &str) {
+    eprintln!(
+        "usage: {prog} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]"
+    );
+}
+
+/// Common accessors for MAD-based filtering across PRN result types.
+trait MadFilterable {
+    fn phase_mad(&self) -> Option<f64>;
+    fn freq_mad(&self) -> Option<f64>;
+}
+
+macro_rules! impl_mad_filterable {
+    ($ty:ty) => {
+        impl MadFilterable for $ty {
+            fn phase_mad(&self) -> Option<f64> { self.phase_mad }
+            fn freq_mad(&self) -> Option<f64> { self.freq_mad }
+        }
+    };
+}
+
+impl_mad_filterable!(acquisition::GpsPrnResult);
+impl_mad_filterable!(galileo::GalileoPrnResult);
+impl_mad_filterable!(beidou::BeiDouPrnResult);
+impl_mad_filterable!(sbas::SbasPrnResult);
+impl_mad_filterable!(l1c::L1CPrnResult);
+impl_mad_filterable!(qzss::QzssPrnResult);
+
+/// Retain only results whose MADs are at or below the given thresholds.
+/// A `None` MAD (single antenna) always passes. Returns the number removed.
+fn apply_mad_filters<T: MadFilterable>(
+    results: &mut Vec<T>,
+    phase_thresh: Option<f64>,
+    freq_thresh: Option<f64>,
+) -> usize {
+    let before = results.len();
+    if let Some(t) = phase_thresh {
+        results.retain(|r| r.phase_mad().map_or(true, |m| m <= t));
+    }
+    if let Some(t) = freq_thresh {
+        results.retain(|r| r.freq_mad().map_or(true, |m| m <= t));
+    }
+    before - results.len()
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let parsed = match parse_args(&args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            print_usage(&args[0]);
+            std::process::exit(1);
+        }
+    };
+
+    if parsed.version_flag {
+        println!("tart-gnss-acquire v{}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
+    let ParsedArgs {
+        file,
+        antenna_i,
+        antenna_j,
+        mut gps_flag,
+        mut galileo_flag,
+        mut beidou_flag,
+        mut sbas_flag,
+        mut l1c_flag,
+        mut qzss_flag,
+        all_flag,
+        ant_list,
+        filter_phase_mad,
+        filter_freq_mad,
+        output_file,
+        debug_flag,
+        cn0_flag,
+        benchmark_flag,
+        prn_filter,
+        version_flag: _,
+    } = parsed;
 
     // --all implies all six acquisition modes
     if all_flag {
@@ -158,10 +230,8 @@ fn main() {
         file
     } else {
         Some(file.unwrap_or_else(|| {
-            eprintln!(
-                "usage: {} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]",
-                args[0]
-            );
+            eprintln!("missing --file (or use --benchmark)");
+            print_usage(&args[0]);
             std::process::exit(1);
         }))
     };
@@ -528,68 +598,24 @@ fn main() {
         // --- Apply MAD filters ---------------------------------------------
         if filter_phase_mad.is_some() || filter_freq_mad.is_some() {
             let mut filter_count = 0u64;
-
-            if let Some(ref mut gps_out) = output.gps {
-                let before = gps_out.results.len();
-                if let Some(thresh) = filter_phase_mad {
-                    gps_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
-                }
-                if let Some(thresh) = filter_freq_mad {
-                    gps_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
-                }
-                filter_count += (before - gps_out.results.len()) as u64;
+            if let Some(o) = output.gps.as_mut() {
+                filter_count += apply_mad_filters(&mut o.results, filter_phase_mad, filter_freq_mad) as u64;
             }
-            if let Some(ref mut gal_out) = output.galileo {
-                let before = gal_out.results.len();
-                if let Some(thresh) = filter_phase_mad {
-                    gal_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
-                }
-                if let Some(thresh) = filter_freq_mad {
-                    gal_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
-                }
-                filter_count += (before - gal_out.results.len()) as u64;
+            if let Some(o) = output.galileo.as_mut() {
+                filter_count += apply_mad_filters(&mut o.results, filter_phase_mad, filter_freq_mad) as u64;
             }
-            if let Some(ref mut bd_out) = output.beidou {
-                let before = bd_out.results.len();
-                if let Some(thresh) = filter_phase_mad {
-                    bd_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
-                }
-                if let Some(thresh) = filter_freq_mad {
-                    bd_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
-                }
-                filter_count += (before - bd_out.results.len()) as u64;
+            if let Some(o) = output.beidou.as_mut() {
+                filter_count += apply_mad_filters(&mut o.results, filter_phase_mad, filter_freq_mad) as u64;
             }
-            if let Some(ref mut sb_out) = output.sbas {
-                let before = sb_out.results.len();
-                if let Some(thresh) = filter_phase_mad {
-                    sb_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
-                }
-                if let Some(thresh) = filter_freq_mad {
-                    sb_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
-                }
-                filter_count += (before - sb_out.results.len()) as u64;
+            if let Some(o) = output.sbas.as_mut() {
+                filter_count += apply_mad_filters(&mut o.results, filter_phase_mad, filter_freq_mad) as u64;
             }
-            if let Some(ref mut l1c_out) = output.l1c {
-                let before = l1c_out.results.len();
-                if let Some(thresh) = filter_phase_mad {
-                    l1c_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
-                }
-                if let Some(thresh) = filter_freq_mad {
-                    l1c_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
-                }
-                filter_count += (before - l1c_out.results.len()) as u64;
+            if let Some(o) = output.l1c.as_mut() {
+                filter_count += apply_mad_filters(&mut o.results, filter_phase_mad, filter_freq_mad) as u64;
             }
-            if let Some(ref mut qz_out) = output.qzss {
-                let before = qz_out.results.len();
-                if let Some(thresh) = filter_phase_mad {
-                    qz_out.results.retain(|r| r.phase_mad.map_or(true, |m| m <= thresh));
-                }
-                if let Some(thresh) = filter_freq_mad {
-                    qz_out.results.retain(|r| r.freq_mad.map_or(true, |m| m <= thresh));
-                }
-                filter_count += (before - qz_out.results.len()) as u64;
+            if let Some(o) = output.qzss.as_mut() {
+                filter_count += apply_mad_filters(&mut o.results, filter_phase_mad, filter_freq_mad) as u64;
             }
-
             if filter_count > 0 {
                 eprintln!("Filtered out {filter_count} results (MAD thresholds)");
             }
@@ -631,4 +657,98 @@ fn main() {
     println!("antenna_i:   {i}");
     println!("antenna_j:   {j}");
     println!("correlation: {correlation:.6}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn test_parse_all_flags() {
+        let p = parse_args(&a(&[
+            "tart-gnss-acquire", "--file", "obs.hdf", "--all", "--cn0", "--debug",
+            "--prn", "1,5,12", "--ant", "0,2",
+            "--filter-phase-mad", "0.002",
+            "--filter-freq-mad", "100.0",
+            "--output", "out.json",
+        ]))
+        .unwrap();
+        assert_eq!(p.file.as_deref(), Some("obs.hdf"));
+        assert_eq!(p.prn_filter.as_deref(), Some(&[1usize, 5, 12][..]));
+        assert_eq!(p.ant_list.as_deref(), Some(&[0usize, 2][..]));
+        assert_eq!(p.filter_phase_mad, Some(0.002));
+        assert_eq!(p.filter_freq_mad, Some(100.0));
+        assert_eq!(p.output_file.as_deref(), Some("out.json"));
+        assert!(p.cn0_flag && p.debug_flag);
+    }
+
+    #[test]
+    fn test_parse_all_sets_flags() {
+        let p = parse_args(&a(&["prog", "--all", "--file", "x.hdf"])).unwrap();
+        assert!(p.all_flag);
+    }
+
+    #[test]
+    fn test_parse_unknown_arg_err() {
+        assert!(parse_args(&a(&["prog", "--nope"])).is_err());
+        assert!(parse_args(&a(&["prog", "--file"])).is_err()); // missing value
+        assert!(parse_args(&a(&["prog", "--i", "bogus"])).is_err());
+        assert!(parse_args(&a(&["prog", "--filter-freq-mad", "x"])).is_err());
+    }
+
+    #[test]
+    fn test_parse_version() {
+        let p = parse_args(&a(&["prog", "--version"])).unwrap();
+        assert!(p.version_flag);
+    }
+
+    #[test]
+    fn test_apply_mad_filters_threshold() {
+        let mut results = vec![
+            acquisition::GpsPrnResult { sv: "GPS01".into(), strengths: vec![], phases: vec![], freqs: vec![],
+                cn0_acr: None, phase_median: Some(0.1), phase_mad: Some(0.001),
+                freq_median: Some(0.0), freq_mad: Some(50.0) },
+            acquisition::GpsPrnResult { sv: "GPS02".into(), strengths: vec![], phases: vec![], freqs: vec![],
+                cn0_acr: None, phase_median: Some(0.2), phase_mad: Some(0.005),
+                freq_median: Some(0.0), freq_mad: Some(20.0) },
+            acquisition::GpsPrnResult { sv: "GPS03".into(), strengths: vec![], phases: vec![], freqs: vec![],
+                cn0_acr: None, phase_median: None, phase_mad: None,
+                freq_median: None, freq_mad: None },
+        ];
+        let removed = apply_mad_filters(&mut results, Some(0.002), None);
+        assert_eq!(removed, 1);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.sv != "GPS02"));
+        assert!(results.iter().any(|r| r.sv == "GPS03"));
+    }
+
+    #[test]
+    fn test_apply_mad_filters_freq() {
+        let mut results = vec![
+            acquisition::GpsPrnResult { sv: "GPS01".into(), strengths: vec![], phases: vec![], freqs: vec![],
+                cn0_acr: None, phase_median: Some(0.0), phase_mad: Some(0.0),
+                freq_median: Some(0.0), freq_mad: Some(100.0) },
+            acquisition::GpsPrnResult { sv: "GPS02".into(), strengths: vec![], phases: vec![], freqs: vec![],
+                cn0_acr: None, phase_median: Some(0.0), phase_mad: Some(0.0),
+                freq_median: Some(0.0), freq_mad: Some(90.0) },
+        ];
+        let removed = apply_mad_filters(&mut results, None, Some(95.0));
+        assert_eq!(removed, 1);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].sv, "GPS02");
+    }
+
+    #[test]
+    fn test_apply_mad_filters_no_threshold_noop() {
+        let mut results = vec![acquisition::GpsPrnResult { sv: "GPS01".into(), strengths: vec![], phases: vec![],
+            freqs: vec![], cn0_acr: None, phase_median: Some(0.0), phase_mad: Some(1000.0),
+            freq_median: Some(0.0), freq_mad: Some(1000.0) }];
+        assert_eq!(apply_mad_filters(&mut results, None, None), 0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].sv, "GPS01");
+    }
 }
