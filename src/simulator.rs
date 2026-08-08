@@ -389,19 +389,18 @@ mod tests {
         let pos1 = [0.6, 0.2, 0.0];
         let cfg = SimConfig { samples: 8192, ..make_config() };
         let fs = cfg.sample_rate;
-        let n = cfg.samples;
         let f = cfg.center_freq;
 
-        let sigs = antenna_signals(&[src.clone()], &[pos0, pos1], &cfg, 100.0);
+        let sigs = antenna_signals(std::slice::from_ref(&src), &[pos0, pos1], &cfg, 100.0);
         let d0 = geometric_delay(src.az, src.el, src.r, pos0);
         let d1 = geometric_delay(src.az, src.el, src.r, pos1);
 
         let dft_phase = |sig: &[f64]| -> f64 {
             let (mut re, mut im) = (0.0f64, 0.0f64);
-            for i in 0..n {
+            for (i, &sval) in sig.iter().enumerate() {
                 let (s, c) = (TAU * f * i as f64 / fs).sin_cos();
-                re += sig[i] * c;
-                im -= sig[i] * s;
+                re += sval * c;
+                im -= sval * s;
             }
             im.atan2(re)
         };
@@ -433,7 +432,7 @@ mod tests {
         let cfg = SimConfig { samples: 256, ..make_config() };
         let data = synthesize(&[src], &positions, &cfg, 20.0);
 
-        let row_bytes = (cfg.samples + 7) / 8;
+        let row_bytes = cfg.samples.div_ceil(8);
         let packed: Vec<Vec<u8>> = data.iter().map(|r| pack_row(r)).collect();
         assert_eq!(packed[0].len(), row_bytes);
 
