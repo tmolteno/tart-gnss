@@ -139,8 +139,11 @@ pub fn acquire_galileo_single(
 ) -> GalileoAcquisitionResult {
     let num_samples = signal_f32.len();
 
-    let epochs_available = (num_samples as f64 / samples_per_code_period as f64).floor();
-    let effective_epochs = epochs_available.max(1.0);
+    // Resample the code to exactly `num_samples` (including a partial final
+    // period), so its length matches the FFT size. Flooring to whole periods
+    // here made the code shorter than the FFT when the signal length is not a
+    // multiple of the code period, triggering a rustfft buffer-too-small panic.
+    let epochs_available = num_samples as f64 / samples_per_code_period as f64;
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -167,7 +170,7 @@ pub fn acquire_galileo_single(
     });
 
     // --- Local code replica (FFT + conjugate once) -------------------------
-    let code = e1c_code_resampled(samples_per_code_period as f64, prn, effective_epochs);
+    let code = e1c_code_resampled(samples_per_code_period as f64, prn, epochs_available);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -424,5 +427,24 @@ mod tests {
             &pure_noise, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
         );
         assert!(r_inj.signal_strength > 10.0 * r_noise.signal_strength);
+    }
+
+    #[test]
+    fn test_acquire_non_period_multiple_no_panic() {
+        // Signal length is NOT a whole multiple of the code period (2.5
+        // periods). Regression: rustfft used to panic with "Provided FFT
+        // buffer was too small" because the local code replica was resampled
+        // to fewer samples than the FFT size.
+        let period = GALILEO_E1_CHIPS;
+        let fs = 1.023e6;
+        let n = (2.5 * period as f64) as usize;
+        let code = e1c_code_resampled(period as f64, 1, 2.5); // length n, partial period
+        let delay = 1000usize;
+        let sig: Vec<f32> = (0..n).map(|i| code[(i + delay) % period] as f32).collect();
+        let res = acquire_galileo_single(
+            &sig, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+        );
+        assert!(res.codephase_frac >= 0.0 && res.codephase_frac < 1.0);
+        assert!(res.signal_strength > 0.0);
     }
 }
