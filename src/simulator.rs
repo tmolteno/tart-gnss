@@ -96,6 +96,57 @@ pub fn random_positions(n: usize, diameter: f64, seed: u64) -> Vec<[f64; 3]> {
         .collect()
 }
 
+/// Unit direction vector toward a source: `[E, N, U]`.
+/// Azimuth 0° = North, increasing East; elevation above the horizon.
+pub fn source_direction(az_deg: f64, el_deg: f64) -> [f64; 3] {
+    let az = az_deg.to_radians();
+    let el = el_deg.to_radians();
+    [
+        az.sin() * el.cos(),
+        az.cos() * el.cos(),
+        el.sin(),
+    ]
+}
+
+/// Geometric delay (seconds) from a source to an antenna position (ENU, m).
+///
+/// `Δ = (|r·ŝ − pos| − r)/c`. Negative means the wavefront reaches the antenna
+/// before the array reference (origin). Sources beyond `PLANE_WAVE_RANGE` (1e4 m)
+/// are treated as plane waves, matching TART.
+pub fn geometric_delay(az_deg: f64, el_deg: f64, r: f64, pos: [f64; 3]) -> f64 {
+    let rr = if r > PLANE_WAVE_RANGE { PLANE_WAVE_RANGE } else { r };
+    let s = source_direction(az_deg, el_deg);
+    let src = [rr * s[0], rr * s[1], rr * s[2]];
+    let dx = src[0] - pos[0];
+    let dy = src[1] - pos[1];
+    let dz = src[2] - pos[2];
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    (dist - rr) / V_LIGHT
+}
+
+/// Assign one distinct frequency (Hz) per source, evenly spread across
+/// `[center - band/2, center + band/2]`. A single source sits at `center`.
+pub fn assign_frequencies(center: f64, band: f64, n: usize) -> Vec<f64> {
+    if n <= 1 {
+        return vec![center];
+    }
+    (0..n)
+        .map(|k| center + band * (k as f64 / (n as f64 - 1.0) - 0.5))
+        .collect()
+}
+
+/// Tone amplitude proportional to the square root of the flux (Jy).
+pub fn amplitude(jy: f64, gain: f64) -> f64 {
+    gain * jy.sqrt()
+}
+
+/// Per-antenna Gaussian noise standard deviation from an SNR in dB:
+/// `σ = sqrt( signal_power / 10^(snr/10) )`, `signal_power = Σ A²/2`.
+pub fn noise_std(amplitudes: &[f64], snr_db: f64) -> f64 {
+    let signal_power: f64 = amplitudes.iter().map(|a| a * a / 2.0).sum();
+    (signal_power / 10f64.powf(snr_db / 10.0)).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +181,66 @@ mod tests {
             assert!(dist <= d / 2.0 + 1e-9);
             assert_eq!(pos[2], 0.0);
         }
+    }
+
+    #[test]
+    fn test_source_direction_north_horizontal() {
+        let d = source_direction(0.0, 0.0);
+        assert!(d[0].abs() < 1e-12, "east={}", d[0]);
+        assert!((d[1] - 1.0).abs() < 1e-12, "north={}", d[1]);
+        assert!(d[2].abs() < 1e-12, "up={}", d[2]);
+    }
+
+    #[test]
+    fn test_source_direction_zenith() {
+        let d = source_direction(30.0, 90.0);
+        assert!((d[2] - 1.0).abs() < 1e-12, "up={}", d[2]);
+        assert!(d[0].abs() < 1e-12 && d[1].abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_geometric_delay_plane_wave() {
+        let d = geometric_delay(0.0, 90.0, 1e7, [0.0, 0.0, 0.0]);
+        assert!(d.abs() < 1e-12);
+
+        let d0 = geometric_delay(0.0, 45.0, 1e7, [0.0, 0.0, 0.0]);
+        let d1 = geometric_delay(0.0, 45.0, 1e7, [0.0, 0.5, 0.0]);
+        let diff = (d1 - d0) * V_LIGHT;
+        let expect = -0.5 * 45.0f64.to_radians().cos();
+        // Tolerance accounts for near-field curvature from the 1e4 m plane-wave cap.
+        assert!((diff - expect).abs() < 1e-4, "diff={diff} expect={expect}");
+    }
+
+    #[test]
+    fn test_geometric_delay_plane_cap() {
+        let d_far = geometric_delay(0.0, 45.0, 1e10, [0.0, 0.5, 0.0]);
+        let d_near = geometric_delay(0.0, 45.0, 1e4, [0.0, 0.5, 0.0]);
+        assert!((d_far - d_near).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_assign_frequencies_single() {
+        assert_eq!(assign_frequencies(4.092e6, 2.0e6, 1), vec![4.092e6]);
+    }
+
+    #[test]
+    fn test_assign_frequencies_spread() {
+        let fs = assign_frequencies(4.0e6, 2.0e6, 3);
+        assert_eq!(fs, vec![3.0e6, 4.0e6, 5.0e6]);
+    }
+
+    #[test]
+    fn test_amplitude_sqrt_flux() {
+        assert!((amplitude(4.0, 1.0) - 2.0).abs() < 1e-12);
+        assert!((amplitude(4.0, 2.0) - 4.0).abs() < 1e-12);
+        // 2x flux -> sqrt(2) amplitude.
+        let r = amplitude(4.0, 1.0) / amplitude(2.0, 1.0);
+        assert!((r - 2.0f64.sqrt()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_noise_std_snr() {
+        assert!((noise_std(&[2.0], 0.0) - 2.0f64.sqrt()).abs() < 1e-9);
+        assert!((noise_std(&[2.0], 10.0) - 0.2f64.sqrt()).abs() < 1e-9);
     }
 }
