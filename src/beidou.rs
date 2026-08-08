@@ -95,12 +95,6 @@ pub fn acquire_beidou_single(
 ) -> BeiDouAcquisitionResult {
     let num_samples = signal_f32.len();
 
-    // Resample the code to exactly `num_samples` (including a partial final
-    // period), so its length matches the FFT size. Flooring to whole periods
-    // here made the code shorter than the FFT when the signal length is not a
-    // multiple of the code period, triggering a rustfft buffer-too-small panic.
-    let epochs_available = num_samples as f64 / samples_per_code_period as f64;
-
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
     let n_freq_bins = (2.0 * search_band / freq_bin_size).round() as usize + 1;
@@ -126,7 +120,9 @@ pub fn acquire_beidou_single(
     });
 
     // --- Local code replica (FFT + conjugate once) -------------------------
-    let code = b1c_code_resampled(samples_per_code_period as f64, prn, epochs_available);
+    // Resample the code to exactly `num_samples` so its length matches the FFT
+    // size (a partial final period is allowed).
+    let code = b1c_code_resampled(samples_per_code_period as f64, prn, num_samples);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -333,7 +329,7 @@ mod tests {
     #[test]
     fn test_b1c_code_resampled_length() {
         let samples_per_code = (BEIDOU_B1C_CHIPS * 2) as f64;
-        let code = b1c_code_resampled(samples_per_code, 1, 2.0);
+        let code = b1c_code_resampled(samples_per_code, 1, BEIDOU_B1C_CHIPS * 4);
         assert_eq!(code.len(), BEIDOU_B1C_CHIPS * 4); // 2 periods of BOC code
     }
 
@@ -353,7 +349,7 @@ mod tests {
     fn test_acquire_beidou_single_recovers_delay() {
         let fs = 1.023e6; // one sample per chip; 10230 chips per 10 ms period
         let period = BEIDOU_B1C_CHIPS;
-        let code = b1c_code_resampled(period as f64, 1, 2.0);
+        let code = b1c_code_resampled(period as f64, 1, 2 * period);
 
         let delay = 3000usize;
         let sig = synth_signal(&code, period, delay, 0.0, fs, 0.05, 21);
@@ -369,7 +365,7 @@ mod tests {
     fn test_acquire_beidou_single_noise_contrast() {
         let fs = 1.023e6;
         let period = BEIDOU_B1C_CHIPS;
-        let code = b1c_code_resampled(period as f64, 1, 2.0);
+        let code = b1c_code_resampled(period as f64, 1, 2 * period);
         let n = code.len();
         let injected = synth_signal(&code, period, 1000, 0.0, fs, 0.05, 22);
         let r_inj = acquire_beidou_single(
@@ -384,20 +380,31 @@ mod tests {
 
     #[test]
     fn test_acquire_non_period_multiple_no_panic() {
-        // Signal length is NOT a whole multiple of the code period (2.5
-        // periods). Regression: rustfft used to panic with "Provided FFT
-        // buffer was too small" because the local code replica was resampled
-        // to fewer samples than the FFT size.
+        // Signal lengths are NOT whole multiples of the code period.
+        // Regression: rustfft used to panic with "Provided FFT buffer was
+        // too small" because the local code replica could be resampled to
+        // fewer samples than the FFT size.
         let period = BEIDOU_B1C_CHIPS;
         let fs = 1.023e6;
-        let n = (2.5 * period as f64) as usize;
-        let code = b1c_code_resampled(period as f64, 1, 2.5); // length n, partial period
         let delay = 1000usize;
-        let sig: Vec<f32> = (0..n).map(|i| code[(i + delay) % period] as f32).collect();
-        let res = acquire_beidou_single(
-            &sig, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
-        );
-        assert!(res.codephase_frac >= 0.0 && res.codephase_frac < 1.0);
-        assert!(res.signal_strength > 0.0);
+
+        // Sweep signal lengths around whole code-period boundaries, including
+        // lengths that are NOT whole multiples of the code period.
+        let mut lengths: Vec<usize> = Vec::new();
+        lengths.extend((period - 3)..=(period + 12));
+        lengths.extend((2 * period - 3)..=(2 * period + 4));
+
+        for &n in &lengths {
+            let code = b1c_code_resampled(period as f64, 1, n); // length n, partial period
+            assert_eq!(code.len(), n, "code length {n}");
+            // % n: code has length n; index within the code itself so the
+            // signal stays in bounds even when n < period.
+            let sig: Vec<f32> = (0..n).map(|i| code[(i + delay) % n] as f32).collect();
+            let res = acquire_beidou_single(
+                &sig, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+            );
+            assert!(res.codephase_frac >= 0.0 && res.codephase_frac < 1.0, "n={n}");
+            assert!(res.signal_strength > 0.0, "n={n}");
+        }
     }
 }

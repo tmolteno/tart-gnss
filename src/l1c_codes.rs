@@ -94,7 +94,7 @@ static LEGENDRE: LazyLock<[u8; LEGENDRE_N]> = LazyLock::new(legendre_sequence);
 /// Pre-computed once at first use; ~10 MB total.
 static L1C_BOC_CODES: LazyLock<Vec<Vec<f64>>> = LazyLock::new(|| {
     (1..=L1C_NUM_SATS)
-        .map(|prn| generate_l1c_pilot_code(prn))
+        .map(generate_l1c_pilot_code)
         .collect()
 });
 
@@ -188,13 +188,16 @@ pub fn generate_l1c_pilot_code(prn: usize) -> Vec<f64> {
     boc
 }
 
-/// Resample the BOC(1,1)-modulated L1C pilot code to `samples_per_code`
-/// samples per 10~ms code period, repeating for `epochs` full periods.
-pub fn l1c_code_resampled(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
+/// Resample the BOC(1,1)-modulated L1C pilot code to exactly `num_samples`
+/// samples.
+///
+/// The code has `samples_per_code` samples per 10-ms code period; it is
+/// repeated (with a possible partial final period) to fill exactly
+/// `num_samples` samples, so its length always matches the FFT size.
+pub fn l1c_code_resampled(samples_per_code: f64, prn: usize, num_samples: usize) -> Vec<f64> {
     let boc = &L1C_BOC_CODES[prn - 1];
     let boc_len = boc.len() as f64; // 20460
     let samples_per_chip = samples_per_code / boc_len;
-    let num_samples = (samples_per_code * epochs).floor() as usize;
 
     (0..num_samples)
         .map(|n| {
@@ -336,7 +339,7 @@ mod tests {
     #[test]
     fn test_l1c_code_resampled_length() {
         let samples_per_code = (L1C_CHIPS * 2) as f64;
-        let code = l1c_code_resampled(samples_per_code, 1, 1.0);
+        let code = l1c_code_resampled(samples_per_code, 1, L1C_CHIPS * 2);
         assert_eq!(code.len(), L1C_CHIPS * 2);
     }
 
@@ -366,7 +369,7 @@ mod tests {
                 LEGENDRE_N - 1
             );
             assert!(
-                p >= 1 && p <= LEGENDRE_N,
+                (1..=LEGENDRE_N).contains(&p),
                 "PRN {} pilot p={} out of range 1..={}",
                 prn + 1,
                 p,
