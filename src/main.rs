@@ -58,6 +58,17 @@ struct ParsedArgs {
     benchmark_flag: bool,
     prn_filter: Option<Vec<usize>>,
     version_flag: bool,
+    simulate: bool,
+    sources: Option<String>,
+    positions: Option<String>,
+    n_generate: Option<usize>,
+    diameter: Option<f64>,
+    sim_seed: Option<u64>,
+    sim_samples: Option<usize>,
+    sample_rate: Option<f64>,
+    center_freq: Option<f64>,
+    band: Option<f64>,
+    snr: Option<f64>,
 }
 
 /// Read the value following a flag, advancing `i`, or return an error if absent.
@@ -127,6 +138,43 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
                 );
             }
             "--version" => p.version_flag = true,
+            "--simulate" => p.simulate = true,
+            "--sources" => {
+                let v = flag_value(args, &mut i, "--sources")?;
+                p.sources = Some(v.to_string());
+            }
+            "--positions" => {
+                let v = flag_value(args, &mut i, "--positions")?;
+                p.positions = Some(v.to_string());
+            }
+            "--N" => {
+                let v = flag_value(args, &mut i, "--N")?;
+                p.n_generate = Some(v.parse().map_err(|_| format!("invalid integer for --N: {v}"))?);
+            }
+            "--diameter" => {
+                let v = flag_value(args, &mut i, "--diameter")?;
+                p.diameter = Some(v.parse().map_err(|_| format!("invalid float for --diameter: {v}"))?);
+            }
+            "--seed" => {
+                let v = flag_value(args, &mut i, "--seed")?;
+                p.sim_seed = Some(v.parse().map_err(|_| format!("invalid integer for --seed: {v}"))?);
+            }
+            "--sample-rate" => {
+                let v = flag_value(args, &mut i, "--sample-rate")?;
+                p.sample_rate = Some(v.parse().map_err(|_| format!("invalid float for --sample-rate: {v}"))?);
+            }
+            "--center-freq" => {
+                let v = flag_value(args, &mut i, "--center-freq")?;
+                p.center_freq = Some(v.parse().map_err(|_| format!("invalid float for --center-freq: {v}"))?);
+            }
+            "--band" => {
+                let v = flag_value(args, &mut i, "--band")?;
+                p.band = Some(v.parse().map_err(|_| format!("invalid float for --band: {v}"))?);
+            }
+            "--snr" => {
+                let v = flag_value(args, &mut i, "--snr")?;
+                p.snr = Some(v.parse().map_err(|_| format!("invalid float for --snr: {v}"))?);
+            }
             other => return Err(format!("unknown argument: {other}")),
         }
         i += 1;
@@ -215,6 +263,17 @@ fn main() {
         benchmark_flag,
         prn_filter,
         version_flag: _,
+        simulate,
+        sources,
+        positions,
+        n_generate,
+        diameter,
+        sim_seed,
+        sim_samples,
+        sample_rate,
+        center_freq,
+        band,
+        snr,
     } = parsed;
 
     // --all implies all six acquisition modes
@@ -227,7 +286,100 @@ fn main() {
         qzss_flag = true;
     }
 
-    let file = if benchmark_flag {
+    // --- Simulation mode -------------------------------------------------
+    if simulate {
+        use crate::simulator::{
+            pack_row, parse_positions, parse_sources, random_positions, synthesize,
+            write_observation, SimConfig, DEFAULT_SEED,
+        };
+
+        let src_path = sources.unwrap_or_else(|| {
+            eprintln!("--simulate requires --sources <catalogue.json>");
+            print_usage(&args[0]);
+            std::process::exit(1);
+        });
+        let src_json = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            eprintln!("error reading sources file {src_path}: {e}");
+            std::process::exit(1);
+        });
+        let src_list = parse_sources(&src_json).unwrap_or_else(|e| {
+            eprintln!("error parsing sources file {src_path}: {e}");
+            std::process::exit(1);
+        });
+        if src_list.is_empty() {
+            eprintln!("--sources file contains no sources");
+            std::process::exit(1);
+        }
+
+        let positions: Vec<[f64; 3]> = if let Some(pos_path) = positions {
+            let pos_json = std::fs::read_to_string(&pos_path).unwrap_or_else(|e| {
+                eprintln!("error reading positions file {pos_path}: {e}");
+                std::process::exit(1);
+            });
+            parse_positions(&pos_json).unwrap_or_else(|e| {
+                eprintln!("error parsing positions file {pos_path}: {e}");
+                std::process::exit(1);
+            })
+        } else {
+            let n = n_generate.unwrap_or_else(|| {
+                eprintln!("--simulate needs either --positions <file> or --N <int>");
+                print_usage(&args[0]);
+                std::process::exit(1);
+            });
+            random_positions(n, diameter.unwrap_or(3.0), sim_seed.unwrap_or(DEFAULT_SEED))
+        };
+        if positions.is_empty() {
+            eprintln!("no antenna positions");
+            std::process::exit(1);
+        }
+
+        let cfg = SimConfig {
+            sample_rate: sample_rate.unwrap_or(16.368e6),
+            center_freq: center_freq.unwrap_or(4.092e6),
+            band: band.unwrap_or(2.0e6),
+            samples: sim_samples.unwrap_or(65_536),
+            gain: 1.0,
+            seed: sim_seed.unwrap_or(DEFAULT_SEED),
+        };
+        let snr_db = snr.unwrap_or_else(|| {
+            eprintln!("--simulate requires --snr <dB>");
+            print_usage(&args[0]);
+            std::process::exit(1);
+        });
+
+        eprintln!(
+            "Simulating {} sources on {} antennas (fs={} Hz, fc={} Hz, band={} Hz, {} samples, snr={snr_db} dB)",
+            src_list.len(),
+            positions.len(),
+            cfg.sample_rate,
+            cfg.center_freq,
+            cfg.band,
+            cfg.samples,
+        );
+        for (k, s) in src_list.iter().enumerate() {
+            let f = cfg.center_freq
+                + cfg.band * (k as f64 / (src_list.len() as f64 - 1.0) - 0.5);
+            eprintln!(
+                "  {:>20}: az={:6.2} el={:6.2} r={:.3e} m jy={:.3e} f={:.3e} Hz",
+                s.name, s.az, s.el, s.r, s.jy, f
+            );
+        }
+
+        let raw = synthesize(&src_list, &positions, &cfg, snr_db);
+        let packed: Vec<Vec<u8>> = raw.iter().map(|r| pack_row(r)).collect();
+
+        let out_path = output_file.unwrap_or("simulation.hdf".to_string());
+        let ts = chrono::Utc::now().to_rfc3339();
+        write_observation(&out_path, positions.len(), cfg.sample_rate, &ts, &packed)
+            .unwrap_or_else(|e| {
+                eprintln!("error writing simulation file {out_path}: {e}");
+                std::process::exit(1);
+            });
+        eprintln!("Wrote simulated observation to {out_path}");
+        return;
+    }
+
+    let file = if benchmark_flag || simulate {
         file
     } else {
         Some(file.unwrap_or_else(|| {
@@ -751,5 +903,30 @@ mod tests {
         assert_eq!(apply_mad_filters(&mut results, None, None), 0);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].sv, "GPS01");
+    }
+
+
+    #[test]
+    fn test_parse_simulate_flags() {
+        let p = parse_args(&a(&[
+            "prog", "--simulate", "--sources", "cat.json",
+            "--positions", "ants.json", "--diameter", "3.0",
+            "--seed", "99", "--N", "12",
+            "--sample-rate", "16.368e6", "--center-freq", "4.092e6",
+            "--band", "2e6", "--snr", "20",
+            "--output", "obs.hdf",
+        ]))
+        .unwrap();
+        assert!(p.simulate);
+        assert_eq!(p.sources.as_deref(), Some("cat.json"));
+        assert_eq!(p.positions.as_deref(), Some("ants.json"));
+        assert_eq!(p.n_generate, Some(12));
+        assert_eq!(p.diameter, Some(3.0));
+        assert_eq!(p.sim_seed, Some(99));
+        assert_eq!(p.sample_rate, Some(16.368e6));
+        assert_eq!(p.center_freq, Some(4.092e6));
+        assert_eq!(p.band, Some(2e6));
+        assert_eq!(p.snr, Some(20.0));
+        assert_eq!(p.output_file.as_deref(), Some("obs.hdf"));
     }
 }
