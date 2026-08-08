@@ -8,6 +8,7 @@
 //! writes an HDF5 observation file readable by `Observation::from_hdf5`.
 
 use serde::Deserialize;
+use hdf5_writer::{DatasetBuilder, Hdf5Builder, Hdf5Writer, WriteOptions};
 
 /// Speed of light (m/s), matching TART's `constants.V_LIGHT`.
 pub const V_LIGHT: f64 = 2.99793e8;
@@ -224,6 +225,41 @@ pub fn pack_row(bits: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+/// Write a raw observation to HDF5 in the layout `Observation::from_hdf5`
+/// expects: `config` (JSON string), `timestamp` (ISO-8601 string), and `data`
+/// (2-D u8 of packed 1-bit samples, shape `[num_antenna, row_bytes]`).
+pub fn write_observation(
+    path: &str,
+    num_antenna: usize,
+    sampling_frequency: f64,
+    timestamp: &str,
+    data: &[Vec<u8>],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let row_bytes = data.first().map(|r| r.len()).unwrap_or(0);
+    let config_json =
+        format!(r#"{{"num_antenna":{num_antenna},"sampling_frequency":{sampling_frequency}}}"#);
+    let flat: Vec<u8> = data.iter().flatten().copied().collect();
+
+    let config_ds = DatasetBuilder::fixed_string_data("config", [], &[config_json.as_str()])?;
+    let ts_ds = DatasetBuilder::fixed_string_data("timestamp", [], &[timestamp])?;
+    let data_ds = DatasetBuilder::typed_data::<u8>(
+        "data",
+        [num_antenna as u64, row_bytes as u64],
+        &flat,
+    )?;
+
+    let plan = Hdf5Builder::new()
+        .dataset(config_ds)
+        .dataset(ts_ds)
+        .dataset(data_ds)
+        .into_plan()?;
+
+    let file = std::fs::File::create(path)?;
+    let writer = Hdf5Writer::new(file, WriteOptions::default());
+    writer.finish(plan)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +424,32 @@ mod tests {
             assert_eq!(ant.len(), cfg.samples);
             assert!(ant.iter().all(|&b| b == 0 || b == 1));
         }
+    }
+
+    #[test]
+    fn test_hdf5_round_trip_via_observation() {
+        let src = Source { name: "sun".into(), az: 0.0, el: 45.0, r: 1.5e11, jy: 1e4 };
+        let positions = random_positions(3, 3.0, 5);
+        let cfg = SimConfig { samples: 256, ..make_config() };
+        let data = synthesize(&[src], &positions, &cfg, 20.0);
+
+        let row_bytes = (cfg.samples + 7) / 8;
+        let packed: Vec<Vec<u8>> = data.iter().map(|r| pack_row(r)).collect();
+        assert_eq!(packed[0].len(), row_bytes);
+
+        let path = std::env::temp_dir().join(format!("sim_roundtrip_{}.hdf", std::process::id()));
+        let ts = "2026-08-08T00:00:00Z";
+        write_observation(path.to_str().unwrap(), positions.len(), cfg.sample_rate, ts, &packed)
+            .unwrap();
+
+        let obs = crate::observation::Observation::from_hdf5(path.to_str().unwrap()).unwrap();
+        assert_eq!(obs.config.num_antenna(), positions.len());
+        assert_eq!(obs.get_sampling_rate(), cfg.sample_rate);
+        assert_eq!(obs.data.len(), positions.len());
+        for ant in &obs.data {
+            assert_eq!(ant.len(), cfg.samples);
+            assert!(ant.iter().all(|&b| b == 0 || b == 1));
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
