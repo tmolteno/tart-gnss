@@ -1,5 +1,17 @@
 # Changes
 
+## UNRELEASED
+
+### Fixed
+
+- **Galileo / BeiDou / L1C `rustfft` buffer-too-small panic** — the single-PRN
+  acquisition functions resampled the local code replica to a *floored whole
+  number of code periods*, making the code shorter than the FFT size whenever
+  the antenna signal length was not an exact multiple of the code period. This
+  triggered `Provided FFT buffer was too small` in `rustfft`. The code replica
+  is now resampled to exactly the signal length (including a partial final
+  period), matching the GPS / SBAS / QZSS path.
+
 ## v0.3.1
 
 ### Changed
