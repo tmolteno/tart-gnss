@@ -147,6 +147,83 @@ pub fn noise_std(amplitudes: &[f64], snr_db: f64) -> f64 {
     (signal_power / 10f64.powf(snr_db / 10.0)).sqrt()
 }
 
+/// Per-antenna continuous-valued (pre-quantization) signals.
+///
+/// For antenna `j`, `signals[j][n] = Σ_k A_k·cos(2π f_k (t_n + Δ_{k,j})) + noise`,
+/// with `t_n = n / sample_rate`.
+pub fn antenna_signals(
+    sources: &[Source],
+    positions: &[[f64; 3]],
+    cfg: &SimConfig,
+    snr_db: f64,
+) -> Vec<Vec<f64>> {
+    let n_src = sources.len();
+    let freqs = assign_frequencies(cfg.center_freq, cfg.band, n_src);
+    let amps: Vec<f64> = sources.iter().map(|s| amplitude(s.jy, cfg.gain)).collect();
+
+    // Delay per (source, antenna).
+    let mut delays = vec![vec![0.0f64; positions.len()]; n_src];
+    for (k, src) in sources.iter().enumerate() {
+        for (j, pos) in positions.iter().enumerate() {
+            delays[k][j] = geometric_delay(src.az, src.el, src.r, *pos);
+        }
+    }
+
+    let sigma = noise_std(&amps, snr_db);
+    let mut rng = XorShift64::new(cfg.seed);
+    let two_pi = std::f64::consts::TAU;
+
+    (0..positions.len())
+        .map(|j| {
+            let mut sig = Vec::with_capacity(cfg.samples);
+            for i in 0..cfg.samples {
+                let t = i as f64 / cfg.sample_rate;
+                let mut v = 0.0f64;
+                for k in 0..n_src {
+                    v += amps[k] * (two_pi * freqs[k] * (t + delays[k][j])).cos();
+                }
+                v += gaussian(&mut rng) * sigma;
+                sig.push(v);
+            }
+            sig
+        })
+        .collect()
+}
+
+/// One-bit quantize a continuous signal to 0/1 unipolar (NRZ; zero -> 1).
+pub fn quantize(signal: &[f64]) -> Vec<u8> {
+    signal.iter().map(|&v| if v >= 0.0 { 1 } else { 0 }).collect()
+}
+
+/// Produce raw 0/1 unipolar samples per antenna.
+pub fn synthesize(
+    sources: &[Source],
+    positions: &[[f64; 3]],
+    cfg: &SimConfig,
+    snr_db: f64,
+) -> Vec<Vec<u8>> {
+    antenna_signals(sources, positions, cfg, snr_db)
+        .into_iter()
+        .map(|s| quantize(&s))
+        .collect()
+}
+
+/// Pack 0/1 bits MSB-first into bytes (matching `observation::unpack_bits` /
+/// `numpy.packbits`). Trailing bits beyond a multiple of 8 are zero-padded.
+pub fn pack_row(bits: &[u8]) -> Vec<u8> {
+    bits.chunks(8)
+        .map(|chunk| {
+            let mut byte = 0u8;
+            for (b, bit) in chunk.iter().enumerate() {
+                if *bit == 1 {
+                    byte |= 1 << (7 - b);
+                }
+            }
+            byte
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +319,74 @@ mod tests {
     fn test_noise_std_snr() {
         assert!((noise_std(&[2.0], 0.0) - 2.0f64.sqrt()).abs() < 1e-9);
         assert!((noise_std(&[2.0], 10.0) - 0.2f64.sqrt()).abs() < 1e-9);
+    }
+
+    use std::f64::consts::TAU;
+
+    fn make_config() -> SimConfig {
+        SimConfig {
+            sample_rate: 16.368e6,
+            center_freq: 4.092e6,
+            band: 2.0e6,
+            samples: 8192,
+            gain: 1.0,
+            seed: 123,
+        }
+    }
+
+    #[test]
+    fn test_quantize() {
+        assert_eq!(quantize(&[1.0, -0.5, 0.0, 3.0]), vec![1, 0, 1, 1]);
+    }
+
+    #[test]
+    fn test_pack_row_msb_first() {
+        assert_eq!(pack_row(&[1, 0, 1, 0, 1, 0, 1, 0]), vec![0b10101010]);
+        let packed = pack_row(&[1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1]);
+        assert_eq!(packed, vec![0b11110000, 0b01010000]);
+    }
+
+    #[test]
+    fn test_phase_delay_recovery() {
+        let src = Source { name: "t".into(), az: 30.0, el: 60.0, r: 1e7, jy: 1.0 };
+        let pos0 = [0.0, 0.0, 0.0];
+        let pos1 = [0.6, 0.2, 0.0];
+        let cfg = SimConfig { samples: 8192, ..make_config() };
+        let fs = cfg.sample_rate;
+        let n = cfg.samples;
+        let f = cfg.center_freq;
+
+        let sigs = antenna_signals(&[src.clone()], &[pos0, pos1], &cfg, 100.0);
+        let d0 = geometric_delay(src.az, src.el, src.r, pos0);
+        let d1 = geometric_delay(src.az, src.el, src.r, pos1);
+
+        let dft_phase = |sig: &[f64]| -> f64 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for i in 0..n {
+                let (s, c) = (TAU * f * i as f64 / fs).sin_cos();
+                re += sig[i] * c;
+                im -= sig[i] * s;
+            }
+            im.atan2(re)
+        };
+        let measured = (dft_phase(&sigs[1]) - dft_phase(&sigs[0])).rem_euclid(TAU);
+        let expected = (TAU * f * (d1 - d0)).rem_euclid(TAU);
+        assert!(
+            (measured - expected).abs() < 1e-2,
+            "measured {measured} expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_synthesize_dimensions_and_unipolar() {
+        let src = Source { name: "a".into(), az: 10.0, el: 20.0, r: 5e3, jy: 100.0 };
+        let cfg = make_config();
+        let positions = random_positions(4, 3.0, 7);
+        let data = synthesize(&[src], &positions, &cfg, 20.0);
+        assert_eq!(data.len(), 4);
+        for ant in &data {
+            assert_eq!(ant.len(), cfg.samples);
+            assert!(ant.iter().all(|&b| b == 0 || b == 1));
+        }
     }
 }
