@@ -50,9 +50,23 @@ pub fn parse_sources(json: &str) -> Result<Vec<Source>, serde_json::Error> {
 
 /// Parse a list of antenna positions `[[east, north, up], ...]` (metres).
 /// The up (z) coordinate is forced to 0.
+///
+/// Returns an error (rather than panicking) if a position row has fewer than
+/// two coordinates (`[east, north]`) or is empty.
 pub fn parse_positions(json: &str) -> Result<Vec<[f64; 3]>, serde_json::Error> {
+    use serde::de::Error as _;
+
     let raw: Vec<Vec<f64>> = serde_json::from_str(json)?;
-    Ok(raw.into_iter().map(|v| [v[0], v[1], 0.0]).collect())
+    let mut out = Vec::with_capacity(raw.len());
+    for v in raw {
+        if v.len() < 2 {
+            return Err(serde_json::Error::custom(
+                "each antenna position must have at least 2 coordinates (east, north)",
+            ));
+        }
+        out.push([v[0], v[1], 0.0]);
+    }
+    Ok(out)
 }
 
 /// Deterministic xorshift64 PRNG (samples layout + noise).
@@ -280,6 +294,16 @@ mod tests {
     fn test_parse_positions_forces_z_zero() {
         let p = parse_positions(r#"[[1.0,2.0,5.0],[3.0,4.0]]"#).unwrap();
         assert_eq!(p, vec![[1.0, 2.0, 0.0], [3.0, 4.0, 0.0]]);
+    }
+
+    #[test]
+    fn test_parse_positions_rejects_short_row() {
+        // A row with fewer than 2 coordinates must error, not panic.
+        assert!(parse_positions(r#"[[1.0]]"#).is_err());
+        assert!(parse_positions(r#"[[]]"#).is_err());
+        assert!(parse_positions(r#"[[1.0,2.0],[5.0]]"#).is_err());
+        // Valid rows still parse.
+        assert!(parse_positions(r#"[[1.0,2.0]]"#).is_ok());
     }
 
     #[test]

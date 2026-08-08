@@ -117,10 +117,10 @@ pub fn generate_qzss_ca_code(prn: usize) -> [f64; acquisition::CA_CHIPS] {
     generate_ca_code_from_delay(qzss_g2shift(prn))
 }
 
-/// Resample the QZSS C/A code to `samples_per_code` samples per period.
-pub fn qzss_gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
+/// Resample the QZSS C/A code to exactly `num_samples` samples.
+pub fn qzss_gold_code(samples_per_code: f64, prn: usize, num_samples: usize) -> Vec<f64> {
     let ca = generate_qzss_ca_code(prn);
-    gold_code_from_ca(samples_per_code, &ca, epochs)
+    gold_code_from_ca(samples_per_code, &ca, num_samples)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +143,6 @@ pub fn acquire_qzss(
 ) -> QzssAcquisitionResult {
     let num_samples = signal_f32.len();
     let samples_per_ms = samples_per_chunk as f64;
-    let epochs_available = num_samples as f64 / samples_per_ms;
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -170,7 +169,9 @@ pub fn acquire_qzss(
     });
 
     // --- Local code replica (FFT + conjugate once) -------------------------
-    let code = qzss_gold_code(samples_per_ms, prn, epochs_available);
+    // Resample the code to exactly `num_samples` so its length matches the FFT
+    // size (a partial final period is allowed).
+    let code = qzss_gold_code(samples_per_ms, prn, num_samples);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -375,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_qzss_gold_code_length() {
-        let code = qzss_gold_code(1023.0, 184, 2.0);
+        let code = qzss_gold_code(1023.0, 184, 2046);
         assert_eq!(code.len(), 2046);
     }
 
@@ -438,12 +439,12 @@ mod tests {
 
     #[test]
     fn test_qzss_first10_octal() {
-        for i in 0..QZSS_NUM_SATS {
+        for (i, &expected) in REF_FIRST10.iter().enumerate() {
             let prn = QZSS_PRN_BASE + i;
             let ca = generate_qzss_ca_code(prn);
             let octal = chips10_to_octal(&ca[0..10]);
             assert_eq!(
-                octal, REF_FIRST10[i],
+                octal, expected,
                 "PRN {prn}: first 10 chips mismatch"
             );
         }
@@ -453,7 +454,7 @@ mod tests {
     fn test_acquire_qzss_recovers_delay() {
         let fs = 1.023e6;
         let period = (fs / 1000.0) as usize; // 1023
-        let code = qzss_gold_code(period as f64, 184, 2.0);
+        let code = qzss_gold_code(period as f64, 184, 2 * period);
 
         let delay = 250usize;
         let sig = synth_signal(&code, period, delay, 0.0, fs, 0.05, 51);
@@ -469,7 +470,7 @@ mod tests {
     fn test_acquire_qzss_noise_contrast() {
         let fs = 1.023e6;
         let period = (fs / 1000.0) as usize;
-        let code = qzss_gold_code(period as f64, 184, 2.0);
+        let code = qzss_gold_code(period as f64, 184, 2 * period);
         let n = code.len();
         let injected = synth_signal(&code, period, 300, 0.0, fs, 0.05, 52);
         let r_inj = acquire_qzss(
@@ -480,5 +481,35 @@ mod tests {
             &pure_noise, &phasepoints(fs, n), fs, 0.0, 3000.0, 184, period,
         );
         assert!(r_inj.signal_strength > 10.0 * r_noise.signal_strength);
+    }
+
+    #[test]
+    fn test_acquire_qzss_sweep_around_period_boundary() {
+        // Sweep signal lengths around whole code-period boundaries, including
+        // lengths that are NOT whole multiples of the code period. These
+        // previously triggered a rustfft buffer-too-small panic.
+        let fs = 1.023e6;
+        let period = (fs / 1000.0) as usize; // 1023
+        let delay = 100usize;
+
+        let mut lengths: Vec<usize> = Vec::new();
+        lengths.extend((period - 3)..=(period + 12));
+        lengths.extend((2 * period - 3)..=(2 * period + 4));
+
+        for &n in &lengths {
+            let code = qzss_gold_code(period as f64, 184, n);
+            assert_eq!(code.len(), n, "code length {n}");
+            // % n: code has length n; index within the code itself so the
+            // signal stays in bounds even when n < period.
+            let sig: Vec<f32> = (0..n).map(|i| code[(i + delay) % n] as f32).collect();
+            let r = acquire_qzss(
+                &sig, &phasepoints(fs, n), fs, 0.0, 3000.0, 184, period,
+            );
+            assert!(
+                r.codephase_frac >= 0.0 && r.codephase_frac < 1.0,
+                "n={n}"
+            );
+            assert!(r.signal_strength > 0.0, "n={n}");
+        }
     }
 }

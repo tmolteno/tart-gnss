@@ -44,7 +44,7 @@ impl Observation {
     ///   - `config`   – scalar dataset containing a JSON string
     ///   - `timestamp` – scalar dataset containing an ISO-8601 UTC string
     ///   - `data`      – 2-D dataset where each row is packed antenna data
-    ///                   (as produced by `numpy.packbits`)
+    ///     (as produced by `numpy.packbits`)
     pub fn from_hdf5(filename: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let h5f = Hdf5File::open(filename)?;
 
@@ -71,7 +71,7 @@ impl Observation {
 
         let data: Vec<Vec<u8>> = packed_rows
             .into_iter()
-            .map(|packed_row| unpack_bits(packed_row))
+            .map(unpack_bits)
             .collect();
 
         // Validate antenna count matches config.

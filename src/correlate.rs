@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn test_correlate_code_recovers_delay() {
         let period = 256usize;
-        let code = gold_code(period as f64, 1, 1.0); // 256-sample GPS C/A code
+        let code = gold_code(period as f64, 1, period); // 256-sample GPS C/A code
         let fs = 1.023e6;
 
         let mut planner = FftPlanner::<f32>::new();
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_correlate_code_noise_only_bounded() {
         let period = 256usize;
-        let code = gold_code(period as f64, 1, 1.0);
+        let code = gold_code(period as f64, 1, period);
         let fs = 1.023e6;
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(period);

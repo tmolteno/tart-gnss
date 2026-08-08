@@ -12,7 +12,7 @@ pub fn median(data: &[f64]) -> f64 {
     let mut copy: Vec<f64> = data.to_vec();
     copy.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = copy.len() / 2;
-    if copy.len() % 2 == 0 {
+    if copy.len().is_multiple_of(2) {
         (copy[mid - 1] + copy[mid]) / 2.0
     } else {
         copy[mid]

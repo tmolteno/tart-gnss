@@ -97,8 +97,8 @@ pub fn generate_ca_code_from_delay(g2shift: usize) -> [f64; CA_CHIPS] {
     // --- G1 ----------------------------------------------------------------
     let mut g1 = [0.0f64; CA_CHIPS];
     let mut lfsr = [-1.0f64; 10]; // initialised to all -1 (bipolar)
-    for i in 0..CA_CHIPS {
-        g1[i] = lfsr[9];
+    for slot in g1.iter_mut() {
+        *slot = lfsr[9];
         let save_bit = lfsr[2] * lfsr[9];
         lfsr.copy_within(0..9, 1);
         lfsr[0] = save_bit;
@@ -107,8 +107,8 @@ pub fn generate_ca_code_from_delay(g2shift: usize) -> [f64; CA_CHIPS] {
     // --- G2 ----------------------------------------------------------------
     let mut g2 = [0.0f64; CA_CHIPS];
     lfsr = [-1.0f64; 10];
-    for i in 0..CA_CHIPS {
-        g2[i] = lfsr[9];
+    for slot in g2.iter_mut() {
+        *slot = lfsr[9];
         let save_bit =
             lfsr[1] * lfsr[2] * lfsr[5] * lfsr[7] * lfsr[8] * lfsr[9];
         lfsr.copy_within(0..9, 1);
@@ -118,8 +118,8 @@ pub fn generate_ca_code_from_delay(g2shift: usize) -> [f64; CA_CHIPS] {
     // --- Shift G2 and combine ----------------------------------------------
     g2.rotate_right(g2shift);
     let mut ca = [0.0f64; CA_CHIPS];
-    for i in 0..CA_CHIPS {
-        ca[i] = -(g1[i] * g2[i]);
+    for (i, slot) in ca.iter_mut().enumerate() {
+        *slot = -(g1[i] * g2[i]);
     }
     ca
 }
@@ -128,20 +128,27 @@ pub fn generate_ca_code_from_delay(g2shift: usize) -> [f64; CA_CHIPS] {
 ///
 /// Returns a `[f64; CA_CHIPS]` array of ±1 values.
 pub fn generate_ca_code(prn: usize) -> [f64; CA_CHIPS] {
-    assert!(prn >= 1 && prn <= 38, "PRN must be in 1..=38, got {prn}");
+    assert!(
+        (1..=GPS_NUM_SATS).contains(&prn),
+        "PRN must be in 1..=38, got {prn}"
+    );
     let g2shift = CODE_DELAY_TABLE[prn - 1];
     generate_ca_code_from_delay(g2shift)
 }
 
-/// Resample a pre-generated C/A code array to `samples_per_code` samples
-/// per period, repeating for `epochs` full periods.
+/// Resample a pre-generated C/A code array to exactly `num_samples` samples.
+///
+/// The code has `samples_per_code` samples per period; it is repeated (with a
+/// possible partial final period) to fill exactly `num_samples` samples. Taking
+/// the target length directly avoids the floating-point round-trip introduced
+/// by deriving it as `(samples_per_code * epochs).floor()`, which could come
+/// out one sample short of the FFT size (rustfft buffer-too-small panic).
 pub fn gold_code_from_ca(
     samples_per_code: f64,
     ca: &[f64; CA_CHIPS],
-    epochs: f64,
+    num_samples: usize,
 ) -> Vec<f64> {
     let samples_per_chip = samples_per_code / CA_CHIPS as f64;
-    let num_samples = (samples_per_code * epochs).floor() as usize;
 
     (0..num_samples)
         .map(|n| {
@@ -151,11 +158,10 @@ pub fn gold_code_from_ca(
         .collect()
 }
 
-/// Resample the C/A code to `samples_per_code` samples per period,
-/// repeating for `epochs` full periods.
-pub fn gold_code(samples_per_code: f64, prn: usize, epochs: f64) -> Vec<f64> {
+/// Resample the C/A code to exactly `num_samples` samples.
+pub fn gold_code(samples_per_code: f64, prn: usize, num_samples: usize) -> Vec<f64> {
     let ca = generate_ca_code(prn);
-    gold_code_from_ca(samples_per_code, &ca, epochs)
+    gold_code_from_ca(samples_per_code, &ca, num_samples)
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +184,6 @@ pub fn acquire_full(
 ) -> AcquisitionResult {
     let num_samples = signal_f32.len();
     let samples_per_ms = samples_per_chunk as f64;
-    let epochs_available = num_samples as f64 / samples_per_ms;
 
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
@@ -203,7 +208,9 @@ pub fn acquire_full(
     });
 
     // --- Local code replica (FFT + conjugate once) -------------------------
-    let code = gold_code(samples_per_ms, prn, epochs_available);
+    // Resample the code to exactly `num_samples` so its length matches the FFT
+    // size (a partial final period is allowed).
+    let code = gold_code(samples_per_ms, prn, num_samples);
     let mut code_complex: Vec<Complex<f32>> = code
         .iter()
         .map(|&v| Complex::new(v as f32, 0.0))
@@ -407,7 +414,7 @@ use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
 
     #[test]
     fn test_gold_code_length() {
-        let code = gold_code(1023.0, 1, 2.0);
+        let code = gold_code(1023.0, 1, 2046);
         assert_eq!(code.len(), 2046);
     }
 
@@ -415,7 +422,7 @@ use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
     fn test_acquire_full_recovers_delay_and_doppler() {
         let fs = 2.046e6; // 2046 samples/ms
         let period = (fs / 1000.0) as usize;
-        let code = gold_code(period as f64, 1, 2.0); // 2 epochs
+        let code = gold_code(period as f64, 1, 2 * period); // 2 epochs
 
         let delay = 500usize;
         let f0 = 1200.0f64;
@@ -441,7 +448,7 @@ use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
     fn test_acquire_full_signal_strength_contrast() {
         let fs = 2.046e6;
         let period = (fs / 1000.0) as usize;
-        let code = gold_code(period as f64, 1, 2.0);
+        let code = gold_code(period as f64, 1, 2 * period);
         let n = code.len();
 
         let injected = synth_signal(&code, period, 123, 0.0, fs, 0.05, 2);
@@ -457,6 +464,50 @@ use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
             "injected {0} should dominate noise {1}",
             r_inj.signal_strength, r_noise.signal_strength
         );
+    }
+
+    #[test]
+    fn test_acquire_full_gold_code_length_matches_signal() {
+        // Regression: the local code replica must be resampled to EXACTLY the
+        // signal length. Deriving it via `floor(samples_per_code * epochs)`
+        // could come out one sample short of the FFT size when the signal
+        // length is not a whole multiple of the code period, triggering a
+        // rustfft buffer-too-small panic.
+        for n in 1000..5050 {
+            let code = gold_code(1000.0, 5, n);
+            assert_eq!(code.len(), n, "code length mismatch for n={n}");
+        }
+    }
+
+    #[test]
+    fn test_acquire_full_sweep_around_period_boundary() {
+        // Sweep signal lengths around whole code-period boundaries, including
+        // lengths that are NOT whole multiples of the code period. These
+        // previously triggered a rustfft buffer-too-small panic.
+        let fs = 2.046e6;
+        let period = (fs / 1000.0) as usize; // 2046 samples/ms
+        let delay = 100usize;
+
+        let mut lengths: Vec<usize> = Vec::new();
+        lengths.extend((period - 3)..=(period + 12));
+        lengths.extend((2 * period - 3)..=(2 * period + 4));
+
+        for &n in &lengths {
+            // The reproducer signal must use exactly n samples of code.
+            let code = gold_code(period as f64, 1, n);
+            assert_eq!(code.len(), n, "code length {n}");
+            // % n: code has length n; index within the code itself so the
+            // signal stays in bounds even when n < period.
+            let sig: Vec<f32> = (0..n).map(|i| code[(i + delay) % n] as f32).collect();
+            let r = acquire_full(
+                &sig, &phasepoints(fs, n), fs, 0.0, 3000.0, 1, period,
+            );
+            assert!(
+                r.codephase_frac >= 0.0 && r.codephase_frac < 1.0,
+                "n={n}"
+            );
+            assert!(r.signal_strength > 0.0, "n={n}");
+        }
     }
 
     #[test]

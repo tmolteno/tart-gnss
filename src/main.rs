@@ -219,10 +219,10 @@ fn apply_mad_filters<T: MadFilterable>(
 ) -> usize {
     let before = results.len();
     if let Some(t) = phase_thresh {
-        results.retain(|r| r.phase_mad().map_or(true, |m| m <= t));
+        results.retain(|r| r.phase_mad().is_none_or(|m| m <= t));
     }
     if let Some(t) = freq_thresh {
-        results.retain(|r| r.freq_mad().map_or(true, |m| m <= t));
+        results.retain(|r| r.freq_mad().is_none_or(|m| m <= t));
     }
     before - results.len()
 }
