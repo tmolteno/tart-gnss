@@ -11,6 +11,7 @@ mod l1c;
 mod observation;
 mod qzss;
 mod sbas;
+mod simulator;
 mod stats;
 
 #[cfg(test)]
