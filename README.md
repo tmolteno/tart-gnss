@@ -81,6 +81,45 @@ tart-gnss-acquire --version
 | `--benchmark`             | Single-PRN timing with startup/search breakdown     |
 | `--version`               | Print version and exit                              |
 
+## Simulating data
+
+Instead of reading a recorded observation, you can generate a synthetic HDF5
+observation file with `--simulate`.  This is useful for testing acquisition
+without a telescope recording.
+
+```bash
+# Generate an observation from a source catalogue and random antenna layout
+tart-gnss-acquire --simulate --sources catalogue.json --N 16 --snr 20 \
+    --output simulation.hdf
+
+# Use a fixed antenna layout from a positions file
+tart-gnss-acquire --simulate --sources catalogue.json --positions positions.json \
+    --snr 20 --output simulation.hdf
+
+# Then acquire from the generated file
+tart-gnss-acquire --file simulation.hdf --all
+```
+
+The generated file is written to `--output <path>` (default `simulation.hdf`).
+The source catalogue is a JSON array of sources, each with `name`, `az`
+(azimuth, degrees), `el` (elevation, degrees), `r` (distance, m), and `jy`
+(flux density, Jy).  Antenna positions come from either a `--positions` JSON
+file or `--N <int>` random positions spread over a `--diameter` (default 3.0 m)
+disk.
+
+| Flag                | Description                                            |
+|---------------------|--------------------------------------------------------|
+| `--simulate`        | Generate a synthetic HDF5 observation instead of acquiring |
+| `--sources PATH`    | Source catalogue JSON file (required)                  |
+| `--positions PATH`  | Antenna positions JSON file (alternative to `--N`)     |
+| `--N INT`           | Number of random antenna positions to generate         |
+| `--diameter X`      | Disk diameter for random positions (m, default 3.0)    |
+| `--snr X`           | Signal-to-noise ratio in dB (required)                 |
+| `--seed INT`        | RNG seed for reproducible random positions/noise       |
+| `--sample-rate X`   | Sample rate in Hz (default 16.368e6)                   |
+| `--center-freq X`   | Centre frequency in Hz (default 4.092e6)               |
+| `--band X`          | Signal bandwidth in Hz (default 2.0e6)                 |
+
 ## JSON output format
 
 Acquisition results are written to stdout as JSON.  The top-level object
