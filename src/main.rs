@@ -3,6 +3,7 @@
 
 mod acr;
 mod acquisition;
+mod antenna_test;
 mod beidou;
 mod config;
 mod correlate;
@@ -56,6 +57,8 @@ struct ParsedArgs {
     debug_flag: bool,
     cn0_flag: bool,
     benchmark_flag: bool,
+    test_antennas_flag: bool,
+    test_min_cn0: Option<f64>,
     prn_filter: Option<Vec<usize>>,
     version_flag: bool,
     simulate: bool,
@@ -129,6 +132,13 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
             "--debug" => p.debug_flag = true,
             "--cn0" => p.cn0_flag = true,
             "--benchmark" => p.benchmark_flag = true,
+            "--test-antennas" => p.test_antennas_flag = true,
+            "--test-min-cn0" => {
+                let v = flag_value(args, &mut i, "--test-min-cn0")?;
+                p.test_min_cn0 = Some(
+                    v.parse().map_err(|_| format!("invalid float for --test-min-cn0: {v}"))?,
+                );
+            }
             "--prn" => {
                 let v = flag_value(args, &mut i, "--prn")?;
                 p.prn_filter = Some(
@@ -182,9 +192,38 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
     Ok(p)
 }
 
+/// Resolve flag implications (`--all` ⇒ six constellations; `--test-antennas`
+/// ⇒ force `--cn0` and, unless a specific constellation flag is given, imply
+/// `--all`). Returns an error string for incompatible combinations.
+fn apply_mode_implications(p: &mut ParsedArgs) -> Result<(), String> {
+    if p.all_flag {
+        p.gps_flag = true;
+        p.galileo_flag = true;
+        p.beidou_flag = true;
+        p.sbas_flag = true;
+        p.l1c_flag = true;
+        p.qzss_flag = true;
+    }
+    if p.test_antennas_flag {
+        p.cn0_flag = true;
+        if p.benchmark_flag {
+            return Err("--test-antennas cannot be combined with --benchmark".to_string());
+        }
+        if !(p.gps_flag || p.galileo_flag || p.beidou_flag || p.sbas_flag || p.l1c_flag || p.qzss_flag) {
+            p.gps_flag = true;
+            p.galileo_flag = true;
+            p.beidou_flag = true;
+            p.sbas_flag = true;
+            p.l1c_flag = true;
+            p.qzss_flag = true;
+        }
+    }
+    Ok(())
+}
+
 fn print_usage(prog: &str) {
     eprintln!(
-        "usage: {prog} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]"
+        "usage: {prog} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--test-antennas] [--test-min-cn0 <x>] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]"
     );
 }
 
@@ -229,7 +268,7 @@ fn apply_mad_filters<T: MadFilterable>(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let parsed = match parse_args(&args) {
+    let mut parsed = match parse_args(&args) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
@@ -243,17 +282,24 @@ fn main() {
         std::process::exit(0);
     }
 
+    // --all / --test-antennas flag implications, before destructuring.
+    if let Err(e) = apply_mode_implications(&mut parsed) {
+        eprintln!("{e}");
+        print_usage(&args[0]);
+        std::process::exit(1);
+    }
+
     let ParsedArgs {
         file,
         antenna_i,
         antenna_j,
-        mut gps_flag,
-        mut galileo_flag,
-        mut beidou_flag,
-        mut sbas_flag,
-        mut l1c_flag,
-        mut qzss_flag,
-        all_flag,
+        gps_flag,
+        galileo_flag,
+        beidou_flag,
+        sbas_flag,
+        l1c_flag,
+        qzss_flag,
+        all_flag: _,
         ant_list,
         filter_phase_mad,
         filter_freq_mad,
@@ -261,6 +307,8 @@ fn main() {
         debug_flag,
         cn0_flag,
         benchmark_flag,
+        test_antennas_flag,
+        test_min_cn0,
         prn_filter,
         version_flag: _,
         simulate,
@@ -275,16 +323,6 @@ fn main() {
         band,
         snr,
     } = parsed;
-
-    // --all implies all six acquisition modes
-    if all_flag {
-        gps_flag = true;
-        galileo_flag = true;
-        beidou_flag = true;
-        sbas_flag = true;
-        l1c_flag = true;
-        qzss_flag = true;
-    }
 
     // --- Simulation mode -------------------------------------------------
     if simulate {
@@ -774,6 +812,43 @@ fn main() {
             }
         }
 
+        // --- Antenna test mode ---------------------------------------------
+        if test_antennas_flag {
+            let min_cn0 = test_min_cn0.unwrap_or(40.0);
+            let report = antenna_test::run(&output, min_cn0);
+            if report.n_reference_satellites == 0 {
+                eprintln!(
+                    "warning: --test-antennas found no satellite with C/N0 ≥ {min_cn0:.1} dB-Hz on all antennas"
+                );
+            } else {
+                eprintln!(
+                    "Antenna relative C/N0 report: {} reference satellite(s) @ ≥ {min_cn0:.1} dB-Hz",
+                    report.n_reference_satellites
+                );
+                for st in &report.antennas {
+                    eprintln!(
+                        "  antenna {:2}: median C/N0 {:5.1} dB-Hz  offset {:+.1} dB  rank {}",
+                        st.antenna, st.median_cn0_db_hz, st.offset_db, st.rank
+                    );
+                }
+                eprintln!(
+                    "  reference SVs: {}",
+                    report.reference_satellites.join(", ")
+                );
+            }
+            let json = serde_json::to_string_pretty(&report).expect("JSON serialization failed");
+            if let Some(path) = &output_file {
+                std::fs::write(path, &json).unwrap_or_else(|e| {
+                    eprintln!("error writing output file {path}: {e}");
+                    std::process::exit(1);
+                });
+                eprintln!("Wrote antenna-test JSON to {path}");
+            } else {
+                println!("{json}");
+            }
+            return;
+        }
+
         let json = serde_json::to_string_pretty(&output).expect("JSON serialization failed");
         if let Some(path) = &output_file {
             std::fs::write(path, &json).unwrap_or_else(|e| {
@@ -837,6 +912,41 @@ mod tests {
         assert_eq!(p.filter_freq_mad, Some(100.0));
         assert_eq!(p.output_file.as_deref(), Some("out.json"));
         assert!(p.cn0_flag && p.debug_flag);
+    }
+
+    #[test]
+    fn test_parse_test_antennas_flags() {
+        let p = parse_args(&a(&[
+            "prog", "--file", "obs.hdf", "--test-antennas",
+            "--test-min-cn0", "42.5",
+        ]))
+        .unwrap();
+        assert!(p.test_antennas_flag);
+        assert_eq!(p.test_min_cn0, Some(42.5));
+        // --test-antennas alone must imply cn0 + all constellations.
+        let mut p2 = parse_args(&a(&["prog", "--file", "obs.hdf", "--test-antennas"])).unwrap();
+        apply_mode_implications(&mut p2).unwrap();
+        assert!(p2.cn0_flag);
+        assert!(p2.gps_flag && p2.galileo_flag && p2.beidou_flag);
+        assert!(p2.sbas_flag && p2.l1c_flag && p2.qzss_flag);
+    }
+
+    #[test]
+    fn test_apply_mode_implications_respects_explicit_constellation() {
+        let mut p = parse_args(&a(&[
+            "prog", "--file", "obs.hdf", "--test-antennas", "--gps",
+        ]))
+        .unwrap();
+        apply_mode_implications(&mut p).unwrap();
+        assert!(p.cn0_flag);
+        assert!(p.gps_flag);
+        assert!(!p.galileo_flag && !p.qzss_flag, "must respect explicit --gps");
+    }
+
+    #[test]
+    fn test_apply_mode_implications_benchmark_conflict() {
+        let mut p = parse_args(&a(&["prog", "--test-antennas", "--benchmark"])).unwrap();
+        assert!(apply_mode_implications(&mut p).is_err());
     }
 
     #[test]

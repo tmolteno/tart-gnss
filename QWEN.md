@@ -38,6 +38,13 @@ cargo run -- --file data/observation.hdf --l1c
 # All constellations
 cargo run -- --file data/observation.hdf --all
 
+# Antenna relative C/N0 quality (implies --cn0 and --all unless a
+# constellation flag is given)
+cargo run -- --file data/observation.hdf --test-antennas
+
+# Same, but only GPS, with a higher reference threshold
+cargo run -- --file data/observation.hdf --test-antennas --gps --test-min-cn0 45
+
 # Single PRN
 cargo run -- --file data/observation.hdf --gps --prn 3
 
@@ -72,12 +79,15 @@ Arguments:
 - `--filter-freq-mad <x>`   — drop PRNs with frequency MAD > x (multi-antenna only)
 - `--i <idx>`               — first antenna index (correlation mode)
 - `--j <idx>`               — second antenna index (correlation mode)
+- `--test-antennas`         — rank antennas by relative C/N0 (implies `--cn0`, and `--all` unless a constellation flag is given)
+- `--test-min-cn0 <x>`      — reference-satellite C/N0 threshold in dB-Hz (default 40.0)
 
 ## Source layout
 
 | File                  | Purpose                                              |
 |-----------------------|------------------------------------------------------|
 | `src/main.rs`         | CLI argument parsing, mode dispatch, combined output  |
+| `src/antenna_test.rs` | antenna-relative C/N0 quality report (`--test-antennas`) |
 | `src/config.rs`       | `Config` — deserialises TART JSON from HDF5           |
 | `src/observation.rs`  | `Observation` — HDF5 reader, unpacking, correlation   |
 | `src/acquisition.rs`  | GPS C/A code gen + FFT circular cross-correlation     |

@@ -162,15 +162,19 @@ pub fn noise_std(amplitudes: &[f64], snr_db: f64) -> f64 {
     (signal_power / 10f64.powf(snr_db / 10.0)).sqrt()
 }
 
-/// Per-antenna continuous-valued (pre-quantization) signals.
+/// Per-antenna continuous-valued (pre-quantization) signals with a
+/// per-antenna gain multiplier applied to the signal component.
 ///
-/// For antenna `j`, `signals[j][n] = Σ_k A_k·cos(2π f_k (t_n + Δ_{k,j})) + noise`,
-/// with `t_n = n / sample_rate`.
-pub fn antenna_signals(
+/// For antenna `j`, `signals[j][n] = Σ_k amps[k]·gains[j]·cos(2π f_k (t_n + Δ_{k,j})) + noise`,
+/// with `t_n = n / sample_rate`.  The noise (`sigma`) is computed from the
+/// *unscaled* amplitudes, so gains[j] shifts that antenna's effective C/N0 by
+/// `20·log10(gains[j])` dB — the lever used by the antenna-quality tests.
+pub fn antenna_signals_with_gains(
     sources: &[Source],
     positions: &[[f64; 3]],
     cfg: &SimConfig,
     snr_db: f64,
+    gains: &[f64],
 ) -> Vec<Vec<f64>> {
     let n_src = sources.len();
     let freqs = assign_frequencies(cfg.center_freq, cfg.band, n_src);
@@ -190,12 +194,13 @@ pub fn antenna_signals(
 
     (0..positions.len())
         .map(|j| {
+            let g = gains[j.min(gains.len() - 1)];
             let mut sig = Vec::with_capacity(cfg.samples);
             for i in 0..cfg.samples {
                 let t = i as f64 / cfg.sample_rate;
                 let mut v = 0.0f64;
                 for k in 0..n_src {
-                    v += amps[k] * (two_pi * freqs[k] * (t + delays[k][j])).cos();
+                    v += amps[k] * g * (two_pi * freqs[k] * (t + delays[k][j])).cos();
                 }
                 v += gaussian(&mut rng) * sigma;
                 sig.push(v);
@@ -205,12 +210,45 @@ pub fn antenna_signals(
         .collect()
 }
 
+/// Per-antenna continuous-valued (pre-quantization) signals, all gains 1.0.
+///
+/// For antenna `j`, `signals[j][n] = Σ_k A_k·cos(2π f_k (t_n + Δ_{k,j})) + noise`,
+/// with `t_n = n / sample_rate`.
+pub fn antenna_signals(
+    sources: &[Source],
+    positions: &[[f64; 3]],
+    cfg: &SimConfig,
+    snr_db: f64,
+) -> Vec<Vec<f64>> {
+    let ones = vec![1.0; positions.len()];
+    antenna_signals_with_gains(sources, positions, cfg, snr_db, &ones)
+}
+
 /// One-bit quantize a continuous signal to 0/1 unipolar (NRZ; zero -> 1).
 pub fn quantize(signal: &[f64]) -> Vec<u8> {
     signal.iter().map(|&v| if v >= 0.0 { 1 } else { 0 }).collect()
 }
 
-/// Produce raw 0/1 unipolar samples per antenna.
+/// Produce raw 0/1 unipolar samples per antenna, scaling each antenna's
+/// signal component by the corresponding entry in `gains`.
+///
+/// Primarily used by tests (e.g. the `--test-antennas` end-to-end ranking
+/// test), so it is allowed to be dead code in production builds.
+#[allow(dead_code)]
+pub fn synthesize_with_gains(
+    sources: &[Source],
+    positions: &[[f64; 3]],
+    cfg: &SimConfig,
+    snr_db: f64,
+    gains: &[f64],
+) -> Vec<Vec<u8>> {
+    antenna_signals_with_gains(sources, positions, cfg, snr_db, gains)
+        .into_iter()
+        .map(|s| quantize(&s))
+        .collect()
+}
+
+/// Produce raw 0/1 unipolar samples per antenna (all gains 1.0).
 pub fn synthesize(
     sources: &[Source],
     positions: &[[f64; 3]],
@@ -474,5 +512,47 @@ mod tests {
             assert!(ant.iter().all(|&b| b == 0 || b == 1));
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_antenna_gains_scale_signal_amplitude() {
+        // Two antennas at the same position, gains 1.0 and 2.0 → the second
+        // antenna's signal amplitude at the carrier must be ~2x the first's.
+        let src = Source { name: "sun".into(), az: 0.0, el: 45.0, r: 1e7, jy: 4.0 };
+        let positions = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let cfg = SimConfig { samples: 4096, ..make_config() };
+        let sigs = antenna_signals_with_gains(
+            std::slice::from_ref(&src),
+            &positions,
+            &cfg,
+            100.0, // essentially noise-free
+            &[1.0, 2.0],
+        );
+        let f = cfg.center_freq;
+        let fs = cfg.sample_rate;
+        let dft_amp = |sig: &[f64]| -> f64 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, &sval) in sig.iter().enumerate() {
+                let (s, c) = (TAU * f * i as f64 / fs).sin_cos();
+                re += sval * c;
+                im -= sval * s;
+            }
+            (re * re + im * im).sqrt()
+        };
+        let ratio = dft_amp(&sigs[1]) / dft_amp(&sigs[0]);
+        assert!((ratio - 2.0).abs() < 1e-2, "gain ratio expected 2.0, got {ratio}");
+    }
+
+    #[test]
+    fn test_synthesize_with_gains_unipolar() {
+        let src = Source { name: "a".into(), az: 10.0, el: 20.0, r: 5e3, jy: 100.0 };
+        let cfg = SimConfig { samples: 8192, ..make_config() };
+        let positions = random_positions(3, 3.0, 7);
+        let data = synthesize_with_gains(&[src], &positions, &cfg, 20.0, &[1.0, 0.5, 1.5]);
+        assert_eq!(data.len(), 3);
+        for ant in &data {
+            assert_eq!(ant.len(), cfg.samples);
+            assert!(ant.iter().all(|&b| b == 0 || b == 1));
+        }
     }
 }
