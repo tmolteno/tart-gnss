@@ -80,7 +80,7 @@ Arguments:
 - `--i <idx>`               — first antenna index (correlation mode)
 - `--j <idx>`               — second antenna index (correlation mode)
 - `--test-antennas`         — rank antennas by relative C/N0 (implies `--cn0`, and `--all` unless a constellation flag is given)
-- `--test-min-cn0 <x>`      — reference-satellite C/N0 threshold in dB-Hz (default 40.0)
+- `--test-min-cn0 <x>`      — reference-satellite C/N0 threshold in dB-Hz (default 44.0; satellite qualifies if ≥ this on **at least one** antenna)
 
 ## Source layout
 

@@ -1,5 +1,17 @@
 # Changes
 
+## UNRELEASED
+
+### Changed
+
+- **`--test-antennas` reference rule relaxed** — a satellite is a reference
+  satellite if its ACR C/N0 is ≥ `--test-min-cn0` on **at least one** antenna
+  (previously: on every antenna).  A broken or degraded antenna no longer
+  disqualifies satellites other antennas see strongly; every antenna is still
+  scored (its low C/N0 values contribute to its median) and per-antenna
+  `n_sats` now reports 0 for such an antenna.  Default threshold raised
+  40 → 44 dB-Hz.
+
 ## v0.3.2
 
 ### Added

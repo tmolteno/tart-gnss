@@ -87,7 +87,7 @@ tart-gnss-acquire --version
 | `--j IDX`                 | Second antenna index (correlation mode)             |
 | `--benchmark`             | Single-PRN timing with startup/search breakdown     |
 | `--test-antennas`         | Rank antennas by relative C/N0 quality (implies `--cn0` and, unless a constellation flag is given, `--all`) |
-| `--test-min-cn0 X`        | Reference-satellite C/N0 threshold in dB-Hz (default 40.0) |
+| `--test-min-cn0 X`        | Reference-satellite C/N0 threshold in dB-Hz (default 44.0) |
 | `--version`               | Print version and exit                              |
 
 ## Simulating data
@@ -188,23 +188,26 @@ to a single antenna via `--ant`.  Use `--filter-phase-mad` /
 With `--test-antennas`, the acquisition JSON is replaced by an
 `antenna_test` report estimating the *relative* C/N0 quality of each
 radio/antenna.  It finds satellites commonly visible with good signal
-strength (ACR C/N0 ≥ `--test-min-cn0` on **every** antenna), then scores
-each antenna as the median C/N0 over that reference set:
+strength (ACR C/N0 ≥ `--test-min-cn0` on **at least one** antenna; a broken
+antenna never reaches the threshold itself, but satellites it can still see
+are scored for all antennas), then scores each antenna as the median C/N0
+over that reference set — every antenna is scored, including ones below the
+threshold:
 
 ```json
 {
   "antenna_numbers": [0, 1, 2],
-  "min_cn0_db_hz": 40.0,
+  "min_cn0_db_hz": 44.0,
   "n_reference_satellites": 4,
   "reference_satellites": ["GPS03", "GPS17", "GSAT21", "SBAS124"],
   "antennas": [
-    {"antenna": 0, "n_sats": 4, "median_cn0_db_hz": 43.2, "offset_db": 0.0, "rank": 1},
-    {"antenna": 1, "n_sats": 4, "median_cn0_db_hz": 41.0, "offset_db": -2.2, "rank": 2},
-    {"antenna": 2, "n_sats": 3, "median_cn0_db_hz": 39.8, "offset_db": -3.4, "rank": 3}
+    {"antenna": 0, "n_sats": 4, "median_cn0_db_hz": 46.1, "offset_db": 0.0, "rank": 1},
+    {"antenna": 1, "n_sats": 3, "median_cn0_db_hz": 44.8, "offset_db": -1.3, "rank": 2},
+    {"antenna": 2, "n_sats": 0, "median_cn0_db_hz": 38.2, "offset_db": -7.9, "rank": 3}
   ],
   "per_satellite": [
-    {"sv": "GPS03",   "cn0_db_hz": [43.0, 42.1, 43.4]},
-    {"sv": "SBAS124", "cn0_db_hz": [42.5, 40.0, 38.9]}
+    {"sv": "GPS03",   "cn0_db_hz": [46.0, 44.2, 37.5]},
+    {"sv": "SBAS124", "cn0_db_hz": [46.5, 45.1, 39.0]}
   ]
 }
 ```
@@ -212,21 +215,22 @@ each antenna as the median C/N0 over that reference set:
 | Field                     | Type            | Description                                             |
 |---------------------------|-----------------|---------------------------------------------------------|
 | `antenna_numbers`         | array[number]   | Antenna indices covered, in order                        |
-| `min_cn0_db_hz`           | number          | Reference-satellite C/N0 threshold                      |
-| `n_reference_satellites`  | number          | Reference satellites meeting the threshold on all antennas |
+| `min_cn0_db_hz`           | number          | Reference-satellite C/N0 threshold (default 44.0)       |
+| `n_reference_satellites`  | number          | Reference satellites meeting the threshold on at least one antenna |
 | `reference_satellites`    | array[string]   | SV labels of the reference set                         |
 | `antennas[].antenna`      | number          | Antenna index                                          |
-| `antennas[].n_sats`       | number          | Reference satellites this antenna met the threshold on  |
+| `antennas[].n_sats`       | number          | Reference satellites this antenna met the threshold on (0 for a broken antenna) |
 | `antennas[].median_cn0_db_hz` | number     | Median C/N0 over the reference set (dB-Hz)             |
 | `antennas[].offset_db`    | number          | Median minus best antenna's median (dB; best = 0, negative = worse) |
 | `antennas[].rank`         | number          | Rank by median C/N0 (1 = best)                         |
 | `per_satellite[].sv`      | string          | Satellite label                                       |
 | `per_satellite[].cn0_db_hz` | array[number] | Per-antenna C/N0 aligned with `antenna_numbers`        |
 
-If no satellite meets the threshold on all antennas, `n_reference_satellites`
-is 0, `reference_satellites`/`per_satellite`/`antennas` are empty, and a
-warning is printed to stderr.  A short per-antenna summary is also printed
-to stderr while the JSON report goes to stdout (or `--output <path>`).
+If no satellite meets the threshold on at least one antenna,
+`n_reference_satellites` is 0, `reference_satellites`/`per_satellite`/
+`antennas` are empty, and a warning is printed to stderr.  A short per-antenna
+summary is also printed to stderr while the JSON report goes to stdout
+(or `--output <path>`).
 
 ## License
 

@@ -8,9 +8,13 @@
 //!
 //! 1. Find satellites "commonly visible with good signal strength" — PRNs whose
 //!    ACR C/N0 estimate exists on **every** antenna and is ≥ `min_cn0` on
-//!    every antenna.  This is the reference set.
+//!    **at least one** antenna.  A broken antenna never reaches the threshold
+//!    itself, but satellites it can still see are scored for all antennas.
+//!    This is the reference set.
 //! 2. For each antenna, its quality score is the median C/N0 across the
-//!    reference set (robust to outlier satellites).
+//!    reference set (robust to outlier satellites).  Antennas that fall below
+//!    the threshold still contribute their (low) C/N0 values, so every antenna
+//!    is scored.
 //! 3. Report each antenna's score relative to the best antenna
 //!    (`offset_db = median − best`, so the best antenna has offset 0) and an
 //!    overall rank.
@@ -25,9 +29,9 @@ pub struct AntennaStat {
     /// Antenna index.
     pub antenna: usize,
     /// Number of reference satellites for which this antenna met the C/N0
-    /// threshold.  With the strict "all antennas" reference rule this equals
-    /// `n_reference_satellites`, but it is computed independently so the field
-    /// stays truthful if the rule is ever relaxed.
+    /// threshold.  With the "at least one antenna" reference rule this is an
+    /// independent per-antenna count: a broken antenna scores 0 here even
+    /// though it still appears in the reported medians.
     pub n_sats: usize,
     /// Median C/N0 across reference satellites (dB-Hz).
     pub median_cn0_db_hz: f64,
@@ -107,7 +111,7 @@ pub fn run(output: &CombinedOutput, min_cn0: f64) -> AntennaTestOutput {
                 let n_ant = all.antenna_numbers().len();
                 for (sv, cn0s) in all.rows() {
                     if let Some(cn0s) = cn0s {
-                        if cn0s.len() == n_ant && cn0s.iter().all(|&c| c >= min_cn0) {
+                        if cn0s.len() == n_ant && cn0s.iter().any(|&c| c >= min_cn0) {
                             candidates.push((sv, cn0s));
                         }
                     }
@@ -347,6 +351,72 @@ mod tests {
         }, 40.0);
         assert!(report.antenna_numbers.is_empty());
         assert_eq!(report.n_reference_satellites, 0);
+    }
+
+    #[test]
+    fn test_run_single_antenna_carries_satellite() {
+        // A broken antenna (30 dB-Hz) must not disqualify a satellite that
+        // another antenna sees strongly (44 dB-Hz ≥ threshold).
+        let gps = crate::acquisition::GpsAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1],
+            results: vec![gps_row("GPS01", Some(vec![44.0, 30.0]))],
+        };
+        let gal = crate::galileo::GalileoAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1],
+            results: vec![],
+        };
+        let report = run(&output(gps, gal), 44.0);
+        assert_eq!(report.n_reference_satellites, 1);
+        assert_eq!(report.reference_satellites, vec!["GPS01"]);
+        // Both antennas are scored; the broken one shows its low median and
+        // 0 satellites meeting the threshold.
+        assert_eq!(report.antennas[0].antenna, 0);
+        assert_eq!(report.antennas[0].n_sats, 1);
+        assert_eq!(report.antennas[0].median_cn0_db_hz, 44.0);
+        assert_eq!(report.antennas[0].offset_db, 0.0);
+        assert_eq!(report.antennas[0].rank, 1);
+        assert_eq!(report.antennas[1].antenna, 1);
+        assert_eq!(report.antennas[1].n_sats, 0);
+        assert_eq!(report.antennas[1].median_cn0_db_hz, 30.0);
+        assert!((report.antennas[1].offset_db + 14.0).abs() < 1e-9);
+        assert_eq!(report.antennas[1].rank, 2);
+    }
+
+    #[test]
+    fn test_run_n_sats_varies_per_antenna() {
+        // Both satellites carried by antenna 0 alone.
+        let gps = crate::acquisition::GpsAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1],
+            results: vec![
+                gps_row("GPS01", Some(vec![44.0, 30.0])),
+                gps_row("GPS02", Some(vec![45.0, 31.0])),
+            ],
+        };
+        let gal = crate::galileo::GalileoAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1],
+            results: vec![],
+        };
+        let report = run(&output(gps, gal), 44.0);
+        assert_eq!(report.n_reference_satellites, 2);
+        assert_eq!(report.antennas[0].n_sats, 2);
+        assert_eq!(report.antennas[1].n_sats, 0);
+        assert_eq!(report.antennas[0].median_cn0_db_hz, 44.5);
+        assert_eq!(report.antennas[1].median_cn0_db_hz, 30.5);
+    }
+
+    #[test]
+    fn test_run_every_antenna_below_threshold_excluded() {
+        let gps = crate::acquisition::GpsAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1],
+            results: vec![gps_row("GPS01", Some(vec![40.0, 41.0]))],
+        };
+        let gal = crate::galileo::GalileoAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1],
+            results: vec![],
+        };
+        let report = run(&output(gps, gal), 44.0);
+        assert_eq!(report.n_reference_satellites, 0);
+        assert!(report.antennas.is_empty());
     }
 
     #[test]

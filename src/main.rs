@@ -814,11 +814,11 @@ fn main() {
 
         // --- Antenna test mode ---------------------------------------------
         if test_antennas_flag {
-            let min_cn0 = test_min_cn0.unwrap_or(40.0);
+            let min_cn0 = test_min_cn0.unwrap_or(44.0);
             let report = antenna_test::run(&output, min_cn0);
             if report.n_reference_satellites == 0 {
                 eprintln!(
-                    "warning: --test-antennas found no satellite with C/N0 ≥ {min_cn0:.1} dB-Hz on all antennas"
+                    "warning: --test-antennas found no satellite with C/N0 ≥ {min_cn0:.1} dB-Hz on at least one antenna"
                 );
             } else {
                 eprintln!(
