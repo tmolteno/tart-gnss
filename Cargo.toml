@@ -1,6 +1,6 @@
 [package]
 name = "tart-gnss-acquire"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.81"
 description = "GNSS signal acquisition for the TART radio telescope — GPS L1 C/A, GPS L1C, Galileo E1-C, BeiDou B1C, SBAS, and QZSS"
