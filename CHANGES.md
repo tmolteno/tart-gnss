@@ -1,8 +1,32 @@
 # Changes
 
-## UNRELEASED
+## v0.3.2
+
+### Added
+
+- **`--test-antennas` mode** — estimates the *relative* C/N0 quality of each
+  radio/antenna from one acquisition snapshot.  It acquires with ACR C/N0
+  estimation (implies `--cn0`, and `--all` unless a constellation flag is
+  given), finds satellites commonly visible with good signal strength
+  (ACR C/N0 ≥ `--test-min-cn0`, default 40 dB-Hz, on **every** selected
+  antenna), then reports each antenna's median C/N0 over that reference set
+  with an offset relative to the best antenna (`offset_db`) and an overall
+  rank.  New flags `--test-antennas` / `--test-min-cn0`; new module
+  `src/antenna_test.rs`.
+- **Simulator per-antenna gains** — `antenna_signals_with_gains` and
+  `synthesize_with_gains` scale each antenna's signal component
+  independently, enabling end-to-end tests of antenna-quality ranking.
 
 ### Fixed
+
+- **`stats::median` used unstable `is_multiple_of`** — replaced with
+  `% 2 == 0` so the crate builds on toolchains older than Rust 1.87.
+- **MSRV declared and code made compatible** — `rust-version = "1.81"` in
+  `Cargo.toml`, matching the lowest dependency (hdf5-reader/writer 0.9.1).
+  Removed `Option::is_none_or` (stabilised in 1.82) from the MAD filters;
+  the other unstable-API use (`is_multiple_of`) is also gone.
+
+### Fixed (carried over from UNRELEASED)
 
 - **Galileo / BeiDou / L1C `rustfft` buffer-too-small panic** — the single-PRN
   acquisition functions resampled the local code replica to a *floored whole
