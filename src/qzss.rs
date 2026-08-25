@@ -8,7 +8,6 @@
 //! 184–206.  The gold-code chip generation is reused from the GPS
 //! acquisition module.
 
-use num_complex::Complex;
 use rayon::prelude::*;
 use rustfft::FftPlanner;
 use std::f64::consts::TAU;
@@ -148,12 +147,16 @@ pub fn acquire_qzss(
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
     let n_freq_bins = (2.0 * search_band / freq_bin_size).round() as usize + 1;
-    let fc: Vec<f64> = (0..n_freq_bins)
-        .map(|i| {
-            center_freq - search_band
-                + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0)
-        })
-        .collect();
+    let fc: Vec<f64> = if n_freq_bins == 1 {
+        vec![center_freq]
+    } else {
+        (0..n_freq_bins)
+            .map(|i| {
+                center_freq - search_band
+                    + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0)
+            })
+            .collect()
+    };
 
     // --- FFT planner (thread-local) ----------------------------------------
     thread_local! {
@@ -169,24 +172,21 @@ pub fn acquire_qzss(
         )
     });
 
-    // --- Local code replica (FFT + conjugate once) -------------------------
-    // Resample the code to exactly `num_samples` so its length matches the FFT
-    // size (a partial final period is allowed).
+    // --- Local code replicas (FFT + conjugate once each) -------------------
+    // Resample the code to exactly `num_samples` so its length matches the
+    // FFT size (a partial final period is allowed).  Two hypotheses cover a
+    // possible sign flip between the two integrated periods (data bit):
+    // `[c, c]` and `[c, -c]`.
     let code = qzss_gold_code(samples_per_ms, prn, num_samples);
-    let mut code_complex: Vec<Complex<f32>> = code
-        .iter()
-        .map(|&v| Complex::new(v as f32, 0.0))
-        .collect();
-    fft.process(&mut code_complex);
-    for c in &mut code_complex {
-        *c = c.conj();
-    }
+    let (code_complex, code_complex_alt) =
+        crate::correlate::code_spectra(&code, samples_per_chunk, &fft);
 
     // --- Parallel frequency-bin correlation --------------------------------
     let peak = correlate_code(
         signal_f32,
         phasepoints,
         &code_complex,
+        &code_complex_alt,
         &fc,
         num_samples,
         samples_per_chunk,
@@ -308,7 +308,7 @@ pub fn acquire_all_qzss(
                     .map(|(&v_m, &v_s)| {
                         if v_s > 0.0 && v_m > v_s {
                             let r_a = (v_m / v_s).powi(2);
-                            crate::acr::estimate_cn0(r_a)
+                            crate::acr::estimate_cn0(r_a, crate::acr::GPS_L1_CA_ACR_TABLE)
                         } else {
                             None
                         }

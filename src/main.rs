@@ -1,41 +1,13 @@
 // Copyright (c) 2026 Tim Molteno <tim@elec.ac.nz>
 // SPDX-License-Identifier: GPL-3.0
 
-mod acr;
-mod acquisition;
-mod antenna_test;
-mod beidou;
-mod config;
-mod correlate;
-mod galileo;
-mod l1c;
-mod observation;
-mod qzss;
-mod sbas;
-mod simulator;
-mod stats;
-
-#[cfg(test)]
-mod testutil;
+use tart_gnss_acquire::{
+    acquisition, antenna_test, beidou, galileo, l1c, observation, qzss, sbas, simulator,
+    CombinedOutput,
+};
 
 use observation::Observation;
 use serde::Serialize;
-
-#[derive(Serialize)]
-struct CombinedOutput {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    gps: Option<acquisition::GpsAllAcquisitionOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    galileo: Option<galileo::GalileoAllAcquisitionOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    beidou: Option<beidou::BeiDouAllAcquisitionOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sbas: Option<sbas::SbasAllAcquisitionOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    l1c: Option<l1c::L1CAllAcquisitionOutput>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    qzss: Option<qzss::QzssAllAcquisitionOutput>,
-}
 
 /// All CLI options parsed from the command line.
 #[derive(Debug, Default)]
@@ -326,7 +298,7 @@ fn main() {
 
     // --- Simulation mode -------------------------------------------------
     if simulate {
-        use crate::simulator::{
+        use simulator::{
             pack_row, parse_positions, parse_sources, random_positions, synthesize,
             write_observation, SimConfig, DEFAULT_SEED,
         };

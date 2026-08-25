@@ -6,7 +6,6 @@
 //!
 //! Ported from `tart/tart/operation/acquisition.py`.
 
-use num_complex::Complex;
 use rayon::prelude::*;
 use rustfft::FftPlanner;
 use std::f64::consts::TAU;
@@ -190,9 +189,13 @@ pub fn acquire_full(
     let freq_bin_size: f64 = 300.0;
     let n_freq_bins =
         (2.0 * search_band / freq_bin_size).round() as usize + 1;
-    let fc: Vec<f64> = (0..n_freq_bins)
-        .map(|i| center_freq - search_band + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0))
-        .collect();
+    let fc: Vec<f64> = if n_freq_bins == 1 {
+        vec![center_freq]
+    } else {
+        (0..n_freq_bins)
+            .map(|i| center_freq - search_band + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0))
+            .collect()
+    };
 
     // --- FFT planner (thread-local) ----------------------------------------
     thread_local! {
@@ -208,24 +211,21 @@ pub fn acquire_full(
         )
     });
 
-    // --- Local code replica (FFT + conjugate once) -------------------------
-    // Resample the code to exactly `num_samples` so its length matches the FFT
-    // size (a partial final period is allowed).
+    // --- Local code replicas (FFT + conjugate once each) -------------------
+    // Resample the code to exactly `num_samples` so its length matches the
+    // FFT size (a partial final period is allowed).  Two hypotheses cover a
+    // possible sign flip between the two integrated periods (data bit):
+    // `[c, c]` and `[c, -c]`.
     let code = gold_code(samples_per_ms, prn, num_samples);
-    let mut code_complex: Vec<Complex<f32>> = code
-        .iter()
-        .map(|&v| Complex::new(v as f32, 0.0))
-        .collect();
-    fft.process(&mut code_complex);
-    for c in &mut code_complex {
-        *c = c.conj();
-    }
+    let (code_complex, code_complex_alt) =
+        crate::correlate::code_spectra(&code, samples_per_chunk, &fft);
 
     // --- Parallel frequency-bin correlation --------------------------------
     let peak = correlate_code(
         signal_f32,
         phasepoints,
         &code_complex,
+        &code_complex_alt,
         &fc,
         num_samples,
         samples_per_chunk,
@@ -345,7 +345,7 @@ pub fn acquire_all_gps(
                     .map(|(&v_m, &v_s)| {
                         if v_s > 0.0 && v_m > v_s {
                             let r_a = (v_m / v_s).powi(2);
-                            crate::acr::estimate_cn0(r_a)
+                            crate::acr::estimate_cn0(r_a, crate::acr::GPS_L1_CA_ACR_TABLE)
                         } else {
                             None
                         }
@@ -398,8 +398,9 @@ pub fn acquire_all_gps(
 #[cfg(test)]
 mod tests {
     use super::*;
-use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
-
+    use crate::testutil::{
+        expected_recovered_sample, phasepoints, synth_signal, synth_signal_cn0,
+    };
 
     #[test]
     fn test_generate_ca_code_length() {
@@ -545,5 +546,46 @@ use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
         // Single antenna -> no median/MAD
         assert!(out.results[0].phase_median.is_none());
         assert!(out.results[0].freq_mad.is_none());
+    }
+
+    #[test]
+    fn test_cn0_acr_end_to_end() {
+        // Median ACR C/N0 estimate over trials validates the 2 ms GPS table
+        // against the real acquisition chain (synthesis → acquisition →
+        // estimate_cn0).  Both replica hypotheses are exercised: no flip
+        // (primary `[c, c]` wins, ±1 dB) and a data-bit flip at the code
+        // epoch (`[c, -c]` wins).  A flipped window is inherently biased low
+        // by 0 to -6 dB depending on where the flip lands within the period
+        // (median -2.5 dB), so the flip case asserts the median in the
+        // [-4.0, -0.5] dB band below the injected value.
+        let fs = 1.023e6; // 1 sample per chip
+        let period = 1023usize;
+        let f0 = 100e3;
+        let cn0_true = 45.0;
+        let code = gold_code(period as f64, 1, 2 * period);
+        let pp = phasepoints(fs, 2 * period);
+
+        for (flip, n_trials, lo, hi) in [(false, 80usize, -1.0, 1.0), (true, 120usize, -4.0, -0.5)] {
+            let mut ests: Vec<f64> = Vec::with_capacity(n_trials);
+            for t in 0..n_trials {
+                let delay = (t * 137) % period;
+                let sig = synth_signal_cn0(
+                    &code, period, delay, f0, fs, cn0_true, 0xACE0 + t as u64, flip,
+                );
+                let r = acquire_full(&sig, &pp, fs, f0, 0.0, 1, period);
+                let r_a = (r.signal_strength / r.second_peak).powi(2);
+                if let Some(c) = crate::acr::estimate_cn0(r_a, crate::acr::GPS_L1_CA_ACR_TABLE) {
+                    ests.push(c);
+                }
+            }
+            assert!(!ests.is_empty(), "no usable estimates (flip={flip})");
+            let med = crate::stats::median(&ests);
+            let d = med - cn0_true;
+            assert!(
+                d >= lo && d <= hi,
+                "median C/N0 {med:.2} vs injected {cn0_true} (flip={flip}, n={})",
+                ests.len()
+            );
+        }
     }
 }

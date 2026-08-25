@@ -86,11 +86,16 @@ Arguments:
 
 | File                  | Purpose                                              |
 |-----------------------|------------------------------------------------------|
-| `src/main.rs`         | CLI argument parsing, mode dispatch, combined output  |
+| `src/lib.rs`          | library crate root: modules + `CombinedOutput`        |
+| `src/main.rs`         | thin CLI over the library: argument parsing, mode dispatch |
 | `src/antenna_test.rs` | antenna-relative C/N0 quality report (`--test-antennas`) |
 | `src/config.rs`       | `Config` — deserialises TART JSON from HDF5           |
 | `src/observation.rs`  | `Observation` — HDF5 reader, unpacking, correlation   |
 | `src/acquisition.rs`  | GPS C/A code gen + FFT circular cross-correlation     |
+| `src/acr.rs`          | ACR C/N0 estimation (`estimate_cn0(r_a, table)`)      |
+| `src/acr_tables.rs`   | per-constellation ACR lookup tables (r_A → dB-Hz)     |
+| `examples/gen_acr_tables.rs` | Monte Carlo generator for the ACR tables       |
+| `src/correlate.rs`    | shared FFT correlation, dual-hypothesis (`[c,c]`/`[c,-c]`) peak + second-peak search |
 | `src/galileo.rs`      | Galileo E1-C pilot acquisition (4092-chip codes)      |
 | `src/galileo_codes.rs`| Galileo E1-C primary codes (50 PRNs, hex-encoded)     |
 | `src/beidou.rs`       | BeiDou B1C pilot acquisition (10230-chip Weil codes)  |

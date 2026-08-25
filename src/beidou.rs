@@ -12,11 +12,8 @@ mod beidou_codes;
 
 use crate::correlate::correlate_code;
 use crate::observation::Observation;
-use beidou_codes::{
-    b1c_code_resampled, BEIDOU_B1C_CODE_PERIOD,
-};
-pub use beidou_codes::BEIDOU_B1C_NUM_SATS;
-use num_complex::Complex;
+use beidou_codes::BEIDOU_B1C_CODE_PERIOD;
+pub use beidou_codes::{BEIDOU_B1C_NUM_SATS, b1c_code_resampled};
 use rayon::prelude::*;
 use rustfft::FftPlanner;
 use serde::Serialize;
@@ -99,12 +96,16 @@ pub fn acquire_beidou_single(
     // --- Frequency bins ----------------------------------------------------
     let freq_bin_size: f64 = 300.0;
     let n_freq_bins = (2.0 * search_band / freq_bin_size).round() as usize + 1;
-    let fc: Vec<f64> = (0..n_freq_bins)
-        .map(|i| {
-            center_freq - search_band
-                + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0)
-        })
-        .collect();
+    let fc: Vec<f64> = if n_freq_bins == 1 {
+        vec![center_freq]
+    } else {
+        (0..n_freq_bins)
+            .map(|i| {
+                center_freq - search_band
+                    + (i as f64) * (2.0 * search_band) / (n_freq_bins as f64 - 1.0)
+            })
+            .collect()
+    };
 
     // --- FFT planner (thread-local) ----------------------------------------
     thread_local! {
@@ -120,24 +121,21 @@ pub fn acquire_beidou_single(
         )
     });
 
-    // --- Local code replica (FFT + conjugate once) -------------------------
-    // Resample the code to exactly `num_samples` so its length matches the FFT
-    // size (a partial final period is allowed).
+    // --- Local code replicas (FFT + conjugate once each) -------------------
+    // Resample the code to exactly `num_samples` so its length matches the
+    // FFT size (a partial final period is allowed).  Two hypotheses cover a
+    // possible sign flip between the two integrated periods (secondary
+    // code): `[c, c]` and `[c, -c]`.
     let code = b1c_code_resampled(samples_per_code_period as f64, prn, num_samples);
-    let mut code_complex: Vec<Complex<f32>> = code
-        .iter()
-        .map(|&v| Complex::new(v as f32, 0.0))
-        .collect();
-    fft.process(&mut code_complex);
-    for c in &mut code_complex {
-        *c = c.conj();
-    }
+    let (code_complex, code_complex_alt) =
+        crate::correlate::code_spectra(&code, samples_per_code_period, &fft);
 
     // --- Parallel frequency-bin correlation --------------------------------
     let peak = correlate_code(
         signal_f32,
         phasepoints,
         &code_complex,
+        &code_complex_alt,
         &fc,
         num_samples,
         samples_per_code_period,
@@ -258,7 +256,7 @@ pub fn acquire_all_beidou(
                     .map(|(&v_m, &v_s)| {
                         if v_s > 0.0 && v_m > v_s {
                             let r_a = (v_m / v_s).powi(2);
-                            crate::acr::estimate_cn0(r_a)
+                            crate::acr::estimate_cn0(r_a, crate::acr::BEIDOU_B1C_ACR_TABLE)
                         } else {
                             None
                         }
@@ -312,7 +310,9 @@ pub fn acquire_all_beidou(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{expected_recovered_sample, phasepoints, synth_signal};
+    use crate::testutil::{
+        expected_recovered_sample, phasepoints, synth_signal, synth_signal_cn0,
+    };
     use beidou_codes::{generate_b1c_pilot_code, BEIDOU_B1C_CHIPS};
 
     #[test]
@@ -408,6 +408,47 @@ mod tests {
             );
             assert!(res.codephase_frac >= 0.0 && res.codephase_frac < 1.0, "n={n}");
             assert!(res.signal_strength > 0.0, "n={n}");
+        }
+    }
+
+    #[test]
+    fn test_cn0_acr_end_to_end() {
+        // Median ACR C/N0 estimate over trials validates the 20 ms BeiDou
+        // table against the real acquisition chain (synthesis → acquisition
+        // → estimate_cn0).  Both replica hypotheses are exercised: no flip
+        // (primary `[c, c]` wins, ±1 dB) and a secondary-code flip at the
+        // code epoch (`[c, -c]` wins).  A flipped window is inherently
+        // biased low by 0 to -6 dB depending on where the flip lands within
+        // the period (median -2.5 dB), so the flip case asserts the median
+        // in the [-4.0, -0.5] dB band below the injected value.
+        let fs = 1.023e6; // 1 sample per chip
+        let period = BEIDOU_B1C_CHIPS;
+        let f0 = 100e3;
+        let cn0_true = 45.0;
+        let code = b1c_code_resampled(period as f64, 1, 2 * period);
+        let pp = phasepoints(fs, 2 * period);
+
+        for (flip, n_trials, lo, hi) in [(false, 50usize, -1.0, 1.0), (true, 120usize, -4.0, -0.5)] {
+            let mut ests: Vec<f64> = Vec::with_capacity(n_trials);
+            for t in 0..n_trials {
+                let delay = (t * 379) % period;
+                let sig = synth_signal_cn0(
+                    &code, period, delay, f0, fs, cn0_true, 0xB011 + t as u64, flip,
+                );
+                let r = acquire_beidou_single(&sig, &pp, fs, f0, 0.0, 1, period);
+                let r_a = (r.signal_strength / r.second_peak).powi(2);
+                if let Some(c) = crate::acr::estimate_cn0(r_a, crate::acr::BEIDOU_B1C_ACR_TABLE) {
+                    ests.push(c);
+                }
+            }
+            assert!(!ests.is_empty(), "no usable estimates (flip={flip})");
+            let med = crate::stats::median(&ests);
+            let d = med - cn0_true;
+            assert!(
+                d >= lo && d <= hi,
+                "median C/N0 {med:.2} vs injected {cn0_true} (flip={flip}, n={})",
+                ests.len()
+            );
         }
     }
 }
