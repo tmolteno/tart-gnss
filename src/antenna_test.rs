@@ -403,6 +403,46 @@ mod tests {
     }
 
     #[test]
+    fn test_report_json_serialization_shape() {
+        // JSON contract of the --test-antennas report: per-satellite rows
+        // keep one entry per antenna (null where ACR failed, so the matrix
+        // stays aligned with antenna_numbers) and an antenna with no
+        // estimates at all is unscored with null fields.
+        let gps = crate::acquisition::GpsAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1, 2],
+            results: vec![gps_row("GPS01", Some(vec![Some(45.0), None, Some(46.0)]))],
+        };
+        let gal = crate::galileo::GalileoAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1, 2],
+            results: vec![],
+        };
+        let report = run(&output(gps, gal), 40.0);
+        let json = serde_json::to_value(&report).expect("serialize antenna-test report");
+        assert_eq!(json["n_reference_satellites"], serde_json::json!(1));
+        assert_eq!(json["antenna_numbers"], serde_json::json!([0, 1, 2]));
+        assert_eq!(json["min_cn0_db_hz"], serde_json::json!(40.0));
+        assert_eq!(json["reference_satellites"], serde_json::json!(["GPS01"]));
+        assert_eq!(json["per_satellite"][0]["sv"], serde_json::json!("GPS01"));
+        assert_eq!(
+            json["per_satellite"][0]["cn0_db_hz"],
+            serde_json::json!([45.0, null, 46.0])
+        );
+        // antenna 1 (middle): no ACR estimates at all → unscored, all nulls.
+        assert_eq!(json["antennas"][1]["antenna"], serde_json::json!(1));
+        assert_eq!(json["antennas"][1]["n_sats"], serde_json::json!(0));
+        assert!(json["antennas"][1]["median_cn0_db_hz"].is_null());
+        assert!(json["antennas"][1]["offset_db"].is_null());
+        assert!(json["antennas"][1]["rank"].is_null());
+        // antennas 0 and 2 are scored with numbers (ant2 best, 46.0).
+        assert!(json["antennas"][0]["median_cn0_db_hz"].is_number());
+        assert_eq!(json["antennas"][0]["rank"], serde_json::json!(2));
+        assert_eq!(json["antennas"][2]["rank"], serde_json::json!(1));
+        // The raw document keeps the nulls (no field skipping).
+        let doc = serde_json::to_string(&report).unwrap();
+        assert!(doc.contains("\"median_cn0_db_hz\":null"), "{doc}");
+    }
+
+    #[test]
     fn test_run_missing_cn0_gives_empty_report() {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
