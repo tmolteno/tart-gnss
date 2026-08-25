@@ -229,6 +229,20 @@ pub fn quantize(signal: &[f64]) -> Vec<u8> {
     signal.iter().map(|&v| if v >= 0.0 { 1 } else { 0 }).collect()
 }
 
+/// One-bit quantize a continuous signal to bipolar ±1 (0 -> -1, 1 -> +1,
+/// matching `Observation::get_antenna`), then remove the mean exactly as
+/// the acquisition pipeline does before correlating.  This is the data
+/// path every TART observation takes (1-bit samples), so the ACR lookup
+/// tables are calibrated against it (`examples/gen_acr_tables.rs`).
+pub fn quantize_bipolar_demean(signal: &[f64]) -> Vec<f32> {
+    let bipolar: Vec<f64> = signal
+        .iter()
+        .map(|&v| if v >= 0.0 { 1.0 } else { -1.0 })
+        .collect();
+    let mean = bipolar.iter().sum::<f64>() / bipolar.len() as f64;
+    bipolar.iter().map(|&v| (v - mean) as f32).collect()
+}
+
 /// Produce raw 0/1 unipolar samples per antenna, scaling each antenna's
 /// signal component by the corresponding entry in `gains`.
 ///

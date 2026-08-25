@@ -551,15 +551,16 @@ mod tests {
     #[test]
     fn test_cn0_acr_end_to_end() {
         // Median ACR C/N0 estimate over trials validates the 2 ms GPS table
-        // against the real acquisition chain (synthesis → acquisition →
-        // estimate_cn0).  Both replica hypotheses are exercised: no flip
-        // (primary `[c, c]` wins, ±1 dB) and a data-bit flip at the code
-        // epoch (`[c, -c]` wins).  A flipped window is inherently biased low
-        // by 0 to -6 dB depending on where the flip lands within the period
-        // (median -2.5 dB), so the flip case asserts the median in the
-        // [-4.0, -0.5] dB band below the injected value.
-        let fs = 1.023e6; // 1 sample per chip
-        let period = 1023usize;
+        // against the real production chain (synthesis → one-bit
+        // quantization → acquisition → estimate_cn0) at the TART sampling
+        // rate (16.368 MHz, 16 samples/chip).  Both replica hypotheses are
+        // exercised: no flip (primary `[c, c]` wins, ±1 dB) and a data-bit
+        // flip at the code epoch (`[c, -c]` wins).  A flipped window is
+        // inherently biased low by 0 to -6 dB depending on where the flip
+        // lands within the period (median -2.5 dB), so the flip case asserts
+        // the median in the [-4.0, -0.5] dB band below the injected value.
+        let fs = 16.368e6; // production TART sampling rate
+        let period = (fs / 1000.0) as usize; // 16368 samples per 1 ms period
         let f0 = 100e3;
         let cn0_true = 45.0;
         let code = gold_code(period as f64, 1, 2 * period);
@@ -569,9 +570,13 @@ mod tests {
             let mut ests: Vec<f64> = Vec::with_capacity(n_trials);
             for t in 0..n_trials {
                 let delay = (t * 137) % period;
-                let sig = synth_signal_cn0(
+                let cont: Vec<f64> = synth_signal_cn0(
                     &code, period, delay, f0, fs, cn0_true, 0xACE0 + t as u64, flip,
-                );
+                )
+                .iter()
+                .map(|&v| v as f64)
+                .collect();
+                let sig = crate::simulator::quantize_bipolar_demean(&cont);
                 let r = acquire_full(&sig, &pp, fs, f0, 0.0, 1, period);
                 let r_a = (r.signal_strength / r.second_peak).powi(2);
                 if let Some(c) = crate::acr::estimate_cn0(r_a, crate::acr::GPS_L1_CA_ACR_TABLE) {

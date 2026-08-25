@@ -146,12 +146,12 @@ mod tests {
 
     #[test]
     fn test_estimate_cn0_gps_mid_range() {
-        // r_A ≈ 7.23 corresponds to 45 dB-Hz in the 2 ms GPS table.
-        let c = estimate_cn0(7.23, GPS_L1_CA_ACR_TABLE).unwrap();
-        assert!((c - 45.0).abs() < 0.3, "CN0 = {c} for r_a=7.23");
-        // r_A ≈ 18.2 corresponds to 50 dB-Hz.
-        let c = estimate_cn0(18.2, GPS_L1_CA_ACR_TABLE).unwrap();
-        assert!((c - 50.0).abs() < 0.3, "CN0 = {c} for r_a=18.2");
+        // r_A ≈ 4.17 corresponds to 45 dB-Hz in the one-bit 2 ms GPS table.
+        let c = estimate_cn0(4.1725, GPS_L1_CA_ACR_TABLE).unwrap();
+        assert!((c - 45.0).abs() < 0.3, "CN0 = {c} for r_a=4.1725");
+        // r_A ≈ 11.45 corresponds to 50 dB-Hz.
+        let c = estimate_cn0(11.4497, GPS_L1_CA_ACR_TABLE).unwrap();
+        assert!((c - 50.0).abs() < 0.3, "CN0 = {c} for r_a=11.4497");
     }
 
     #[test]

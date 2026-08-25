@@ -2,15 +2,18 @@
 // SPDX-License-Identifier: GPL-3.0
 
 //! Generate per-constellation ACR C/N0 lookup tables by Monte Carlo
-//! simulation of the actual acquisition functions.
+//! simulation of the actual acquisition functions on the production data
+//! path: 16.368 MHz sampling with one-bit quantization (the TART array's
+//! observation format), exactly as the acquisition pipeline consumes it.
 //!
 //! Usage:
 //!   cargo run --release --example gen_acr_tables > /tmp/tables.txt
 //!
 //! Method: for each constellation and each C/N0 on a 0.5 dB grid, synthesize
-//! a two-code-period signal at 1 sample per chip (1.023 MHz) with a known
-//! carrier, random code phase and carrier phase, run the production
-//! acquisition, and measure
+//! a two-code-period signal at the production sampling rate with a known
+//! carrier, random code phase and carrier phase, one-bit quantize it
+//! (`simulator::quantize_bipolar_demean`, matching `Observation` data), run
+//! the production acquisition, and measure
 //!
 //!   r_A = mean(V^m²) / mean(V^s²)
 //!
@@ -19,9 +22,10 @@
 //! Ma et al. (2024), eq. 7:  C/N0 = A²·fs/(4σ²) with unit noise variance,
 //! i.e. A = 2·sqrt(C/N0/fs)  (see src/testutil.rs for the same convention).
 //!
-//! One sample per chip is faithful to the 16 MHz TART sampling: the noise
-//! correlation function is piecewise linear with knots at chip boundaries,
-//! so the max over the oversampled grid equals the max at chip spacing.
+//! The tables must be generated with the quantized path: one-bit sampling
+//! reduces the recovered coherent amplitude by sqrt(2/π) in the weak-signal
+//! limit, so a table calibrated on unquantized signals underestimates C/N0
+//! by ~2-3 dB on real (1-bit) TART data.
 
 use rayon::prelude::*;
 use std::f64::consts::TAU;
@@ -29,8 +33,9 @@ use tart_gnss_acquire::acquisition;
 use tart_gnss_acquire::beidou;
 use tart_gnss_acquire::galileo;
 use tart_gnss_acquire::l1c;
+use tart_gnss_acquire::simulator::quantize_bipolar_demean;
 
-const FS: f64 = 1.023e6; // 1 sample per chip for all constellations
+const FS: f64 = 16.368e6; // production TART sampling rate (16 samples/chip)
 const F_CARRIER: f64 = 100e3;
 const TRIALS: usize = 100;
 
@@ -59,17 +64,19 @@ fn amplitude(cn0_db: f64) -> f64 {
 }
 
 /// Two code periods of `code`, circularly delayed by `delay` samples,
-/// modulated on the carrier with phase `theta`, plus unit-variance noise.
+/// modulated on the carrier with phase `theta`, plus unit-variance noise,
+/// then one-bit quantized and de-meaned exactly like a TART observation.
 fn synth(code: &[f64], period: usize, cn0_db: f64, delay: usize, theta: f64, seed: u64) -> Vec<f32> {
     let a = amplitude(cn0_db);
     let mut rng = XorShift(seed);
-    (0..code.len())
+    let cont: Vec<f64> = (0..code.len())
         .map(|i| {
             let cp = (i + delay) % period;
             let carrier = a * (TAU * F_CARRIER * i as f64 / FS + theta).cos();
-            (code[cp] * carrier + rng.gaussian()) as f32
+            code[cp] * carrier + rng.gaussian()
         })
-        .collect()
+        .collect();
+    quantize_bipolar_demean(&cont)
 }
 
 fn phasepoints(n: usize) -> Vec<f64> {
@@ -78,6 +85,7 @@ fn phasepoints(n: usize) -> Vec<f64> {
 }
 
 type AcqFn = fn(&[f32], &[f64], f64, f64, f64, usize, usize) -> (f64, f64);
+type CodeFn = fn(usize, f64, usize) -> Vec<f64>;
 
 fn acq_gps(s: &[f32], p: &[f64], fs: f64, cf: f64, sb: f64, prn: usize, per: usize) -> (f64, f64) {
     let r = acquisition::acquire_full(s, p, fs, cf, sb, prn, per);
@@ -102,30 +110,31 @@ fn acq_l1c(s: &[f32], p: &[f64], fs: f64, cf: f64, sb: f64, prn: usize, per: usi
 struct Spec {
     name: &'static str,
     doc: &'static str,
-    period: usize, // one code period in samples (== chips)
+    /// One code period in samples at the production sampling rate.
+    period: usize,
     cn0_lo: f64,
     cn0_hi: f64,
-    code: fn(usize, usize) -> Vec<f64>,
+    code: CodeFn,
     acq: AcqFn,
 }
 
-fn gps_code(prn: usize, n: usize) -> Vec<f64> {
-    acquisition::gold_code(1023.0, prn, n)
+fn gps_code(prn: usize, samples_per_code: f64, n: usize) -> Vec<f64> {
+    acquisition::gold_code(samples_per_code, prn, n)
 }
-fn gal_code(prn: usize, n: usize) -> Vec<f64> {
-    galileo::e1c_code_resampled(4092.0, prn, n)
+fn gal_code(prn: usize, samples_per_code: f64, n: usize) -> Vec<f64> {
+    galileo::e1c_code_resampled(samples_per_code, prn, n)
 }
-fn bds_code(prn: usize, n: usize) -> Vec<f64> {
-    beidou::b1c_code_resampled(10230.0, prn, n)
+fn bds_code(prn: usize, samples_per_code: f64, n: usize) -> Vec<f64> {
+    beidou::b1c_code_resampled(samples_per_code, prn, n)
 }
-fn l1c_code(prn: usize, n: usize) -> Vec<f64> {
-    l1c::l1c_code_resampled(10230.0, prn, n)
+fn l1c_code(prn: usize, samples_per_code: f64, n: usize) -> Vec<f64> {
+    l1c::l1c_code_resampled(samples_per_code, prn, n)
 }
 
 fn generate(spec: &Spec) {
     let prn = 1usize;
     let num_samples = 2 * spec.period;
-    let code = (spec.code)(prn, num_samples);
+    let code = (spec.code)(prn, spec.period as f64, num_samples);
     let pp = phasepoints(num_samples);
 
     println!("// {} — {} ({} trials per point)", spec.name, spec.doc, TRIALS);
@@ -153,7 +162,10 @@ fn generate(spec: &Spec) {
             r_a = prev_r_a + 0.001;
         }
         prev_r_a = r_a;
-        println!("    ({r_a:.3}, {cn0:.1}),");
+        // 4 decimals: the one-bit tables are compressed near the cut-off
+        // (adjacent entries can be < 0.0005 apart after rounding at 3), so
+        // 3 decimals can tie entries and break strict monotonicity.
+        println!("    ({r_a:.4}, {cn0:.1}),");
         cn0 += 0.5;
     }
     println!("];");
@@ -164,7 +176,7 @@ fn main() {
     generate(&Spec {
         name: "GPS_L1_CA_ACR_TABLE",
         doc: "GPS L1 C/A, SBAS, QZSS. T_coh = 2 ms, 1023-chip Gold codes",
-        period: 1023,
+        period: 16_368, // 1 ms at 16.368 MHz
         cn0_lo: 33.0,
         cn0_hi: 62.0,
         code: gps_code,
@@ -173,7 +185,7 @@ fn main() {
     generate(&Spec {
         name: "GALILEO_E1C_ACR_TABLE",
         doc: "Galileo E1-C pilot. T_coh = 8 ms, 4092-chip memory codes",
-        period: 4092,
+        period: 65_472, // 4 ms at 16.368 MHz
         cn0_lo: 27.0,
         cn0_hi: 62.0,
         code: gal_code,
@@ -182,7 +194,7 @@ fn main() {
     generate(&Spec {
         name: "BEIDOU_B1C_ACR_TABLE",
         doc: "BeiDou B1C pilot. T_coh = 20 ms, 10230-chip Weil codes",
-        period: 10230,
+        period: 163_680, // 10 ms at 16.368 MHz
         cn0_lo: 23.0,
         cn0_hi: 62.0,
         code: bds_code,
@@ -191,7 +203,7 @@ fn main() {
     generate(&Spec {
         name: "GPS_L1C_ACR_TABLE",
         doc: "GPS L1C pilot. T_coh = 20 ms, 10230-chip Weil codes",
-        period: 10230,
+        period: 163_680, // 10 ms at 16.368 MHz
         cn0_lo: 23.0,
         cn0_hi: 62.0,
         code: l1c_code,

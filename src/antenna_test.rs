@@ -659,7 +659,7 @@ mod tests {
         // One-bit quantization (sign only) erases pure amplitude differences,
         // so the surviving lever for a "worse radio" is extra noise — antenna 2
         // gets 8x the noise of antennas 0/1. With these parameters the two
-        // good antennas sit near 55 dB-Hz and the degraded one near 46 dB-Hz.
+        // good antennas sit near 56 dB-Hz and the degraded one near 44 dB-Hz.
         let n_ant = 3;
         let prns: &[usize] = &[1, 7, 20];
         let obs = observation_with_gains(prns, n_ant, &[1.0; 3], &[2.0, 2.0, 16.0]);
