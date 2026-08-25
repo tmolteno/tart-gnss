@@ -49,9 +49,10 @@ pub struct BeiDouPrnResult {
     pub phases: Vec<f64>,
     /// Per-antenna Doppler frequency offsets (Hz).
     pub freqs: Vec<f64>,
-    /// ACR C/N0 estimate per antenna (dB-Hz), if available.
+    /// ACR C/N0 estimate per antenna (dB-Hz), aligned with the per-antenna
+    /// vectors above; `null` where the estimate failed (e.g. a dead channel).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cn0_acr: Option<Vec<f64>>,
+    pub cn0_acr: Option<Vec<Option<f64>>>,
     /// Median phase across antennas (only when >1 antenna).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub phase_median: Option<f64>,
@@ -247,12 +248,14 @@ pub fn acquire_all_beidou(
                 freqs.push(result.frequency);
             }
 
-            // Compute ACR C/N0 per antenna
-            let cn0_acr: Option<Vec<f64>> = if cn0 {
-                let cn0s: Vec<f64> = strengths
+            // Compute ACR C/N0 per antenna, keeping one entry per antenna
+            // (None where the peak ratio is unusable) so the vector stays
+            // aligned with the other per-antenna results.
+            let cn0_acr: Option<Vec<Option<f64>>> = if cn0 {
+                let cn0s: Vec<Option<f64>> = strengths
                     .iter()
                     .zip(second_peaks.iter())
-                    .filter_map(|(&v_m, &v_s)| {
+                    .map(|(&v_m, &v_s)| {
                         if v_s > 0.0 && v_m > v_s {
                             let r_a = (v_m / v_s).powi(2);
                             crate::acr::estimate_cn0(r_a)
@@ -261,7 +264,7 @@ pub fn acquire_all_beidou(
                         }
                     })
                     .collect();
-                if cn0s.is_empty() { None } else { Some(cn0s) }
+                if cn0s.iter().all(Option::is_none) { None } else { Some(cn0s) }
             } else {
                 None
             };

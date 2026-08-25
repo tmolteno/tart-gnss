@@ -11,6 +11,17 @@
   scored (its low C/N0 values contribute to its median) and per-antenna
   `n_sats` now reports 0 for such an antenna.  Default threshold raised
   40 → 44 dB-Hz.
+- **`--test-antennas` handles dead antennas** — an antenna that produces no
+  ACR estimate at all (e.g. a dead channel) no longer empties the reference
+  set: missing per-antenna C/N0 entries are reported as `null` in the
+  `per_satellite` matrix (which stays aligned with `antenna_numbers`), and
+  the antenna itself is listed unscored with `null`
+  `median_cn0_db_hz`/`offset_db`/`rank` and `n_sats: 0`.
+- **ACR C/N0 rows stay aligned with antennas** — `cn0_acr` now keeps one
+  entry per antenna (`null` where the estimate failed) instead of dropping
+  failed antennas and shifting the remaining values.  This makes the
+  per-satellite matrix correct for a dead antenna at any index, not just the
+  last one.
 
 ## v0.3.2
 

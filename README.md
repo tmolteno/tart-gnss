@@ -173,7 +173,7 @@ in the array describes one satellite/PRN:
 | `strengths`      | array[number] | Per-antenna peak correlation magnitudes                  |
 | `phases`         | array[number] | Per-antenna code-phase offsets (fraction of code period) |
 | `freqs`          | array[number] | Per-antenna Doppler frequency offsets (Hz)               |
-| `cn0_acr`        | array[number]?| Per-antenna ACR C/N0 estimates in dB-Hz (only with `--cn0`) |
+| `cn0_acr`        | array[number \| null]? | Per-antenna ACR C/N0 estimates in dB-Hz, aligned with the other per-antenna fields; `null` where the estimate failed (only with `--cn0`) |
 | `phase_median`   | number?       | Median phase across antennas (only when >1 antenna)      |
 | `phase_mad`      | number?       | Median absolute deviation of phase (multi-antenna only)  |
 | `freq_median`    | number?       | Median frequency across antennas (multi-antenna only)    |
@@ -191,8 +191,10 @@ radio/antenna.  It finds satellites commonly visible with good signal
 strength (ACR C/N0 ≥ `--test-min-cn0` on **at least one** antenna; a broken
 antenna never reaches the threshold itself, but satellites it can still see
 are scored for all antennas), then scores each antenna as the median C/N0
-over that reference set — every antenna is scored, including ones below the
-threshold:
+over that reference set — every antenna with at least one ACR estimate is
+scored, including ones below the threshold.  An antenna that produced no
+ACR estimate at all (e.g. a dead channel) is listed unscored with `null`
+median/offset/rank:
 
 ```json
 {
@@ -203,11 +205,11 @@ threshold:
   "antennas": [
     {"antenna": 0, "n_sats": 4, "median_cn0_db_hz": 46.1, "offset_db": 0.0, "rank": 1},
     {"antenna": 1, "n_sats": 3, "median_cn0_db_hz": 44.8, "offset_db": -1.3, "rank": 2},
-    {"antenna": 2, "n_sats": 0, "median_cn0_db_hz": 38.2, "offset_db": -7.9, "rank": 3}
+    {"antenna": 2, "n_sats": 0, "median_cn0_db_hz": null, "offset_db": null, "rank": null}
   ],
   "per_satellite": [
-    {"sv": "GPS03",   "cn0_db_hz": [46.0, 44.2, 37.5]},
-    {"sv": "SBAS124", "cn0_db_hz": [46.5, 45.1, 39.0]}
+    {"sv": "GPS03",   "cn0_db_hz": [46.0, 44.2, null]},
+    {"sv": "SBAS124", "cn0_db_hz": [46.5, 45.1, null]}
   ]
 }
 ```
@@ -220,11 +222,11 @@ threshold:
 | `reference_satellites`    | array[string]   | SV labels of the reference set                         |
 | `antennas[].antenna`      | number          | Antenna index                                          |
 | `antennas[].n_sats`       | number          | Reference satellites this antenna met the threshold on (0 for a broken antenna) |
-| `antennas[].median_cn0_db_hz` | number     | Median C/N0 over the reference set (dB-Hz)             |
-| `antennas[].offset_db`    | number          | Median minus best antenna's median (dB; best = 0, negative = worse) |
-| `antennas[].rank`         | number          | Rank by median C/N0 (1 = best)                         |
+| `antennas[].median_cn0_db_hz` | number \| null | Median C/N0 over the reference set (dB-Hz); `null` if this antenna produced no ACR estimate at all |
+| `antennas[].offset_db`    | number \| null  | Median minus best antenna's median (dB; best = 0, negative = worse); `null` if unscored |
+| `antennas[].rank`         | number \| null  | Rank by median C/N0 (1 = best); `null` if unscored |
 | `per_satellite[].sv`      | string          | Satellite label                                       |
-| `per_satellite[].cn0_db_hz` | array[number] | Per-antenna C/N0 aligned with `antenna_numbers`        |
+| `per_satellite[].cn0_db_hz` | array[number \| null] | Per-antenna C/N0 aligned with `antenna_numbers`; `null` where an antenna produced no estimate for this satellite |
 
 If no satellite meets the threshold on at least one antenna,
 `n_reference_satellites` is 0, `reference_satellites`/`per_satellite`/

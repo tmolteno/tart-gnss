@@ -7,14 +7,15 @@
 //! array's antennas by relative performance:
 //!
 //! 1. Find satellites "commonly visible with good signal strength" — PRNs whose
-//!    ACR C/N0 estimate exists on **every** antenna and is ≥ `min_cn0` on
-//!    **at least one** antenna.  A broken antenna never reaches the threshold
-//!    itself, but satellites it can still see are scored for all antennas.
+//!    ACR C/N0 estimate is ≥ `min_cn0` on **at least one** antenna.  A broken
+//!    antenna never reaches the threshold itself, and need not produce an
+//!    estimate at all: satellites other antennas see strongly still qualify.
 //!    This is the reference set.
 //! 2. For each antenna, its quality score is the median C/N0 across the
 //!    reference set (robust to outlier satellites).  Antennas that fall below
 //!    the threshold still contribute their (low) C/N0 values, so every antenna
-//!    is scored.
+//!    with at least one estimate is scored; one with none at all (a dead
+//!    channel) is reported unscored (`null` median/offset/rank).
 //! 3. Report each antenna's score relative to the best antenna
 //!    (`offset_db = median − best`, so the best antenna has offset 0) and an
 //!    overall rank.
@@ -29,16 +30,18 @@ pub struct AntennaStat {
     /// Antenna index.
     pub antenna: usize,
     /// Number of reference satellites for which this antenna met the C/N0
-    /// threshold.  With the "at least one antenna" reference rule this is an
-    /// independent per-antenna count: a broken antenna scores 0 here even
-    /// though it still appears in the reported medians.
+    /// threshold.  A broken or dead antenna scores 0 here even though it
+    /// still appears in the report.
     pub n_sats: usize,
-    /// Median C/N0 across reference satellites (dB-Hz).
-    pub median_cn0_db_hz: f64,
-    /// Median minus the best antenna's median (dB). Best antenna has 0.0.
-    pub offset_db: f64,
-    /// Rank by median C/N0 (1 = best; ties broken by antenna index).
-    pub rank: usize,
+    /// Median C/N0 across reference satellites (dB-Hz), `null` if this
+    /// antenna produced no ACR estimate at all (e.g. a dead channel).
+    pub median_cn0_db_hz: Option<f64>,
+    /// Median minus the best antenna's median (dB). Best antenna has 0.0;
+    /// `null` for unscored antennas.
+    pub offset_db: Option<f64>,
+    /// Rank by median C/N0 (1 = best; ties broken by antenna index);
+    /// `null` for unscored antennas.
+    pub rank: Option<usize>,
 }
 
 /// Per-satellite C/N0 matrix (one entry per reference satellite).
@@ -47,7 +50,8 @@ pub struct SatelliteCn0 {
     /// Constellation label, e.g. "GPS03".
     pub sv: String,
     /// Per-antenna C/N0 estimates aligned with `antenna_numbers` (dB-Hz).
-    pub cn0_db_hz: Vec<f64>,
+    /// `null` where an antenna produced no ACR estimate for this satellite.
+    pub cn0_db_hz: Vec<Option<f64>>,
 }
 
 /// JSON report produced by `--test-antennas`.
@@ -71,7 +75,7 @@ pub struct AntennaTestOutput {
 /// Uniform read view over the six constellation output types.
 trait AllOutput {
     fn antenna_numbers(&self) -> &[usize];
-    fn rows(&self) -> Vec<(String, Option<Vec<f64>>)>;
+    fn rows(&self) -> Vec<(String, Option<Vec<Option<f64>>>)>;
 }
 
 macro_rules! impl_all_output {
@@ -80,7 +84,7 @@ macro_rules! impl_all_output {
             fn antenna_numbers(&self) -> &[usize] {
                 &self.antenna_numbers
             }
-            fn rows(&self) -> Vec<(String, Option<Vec<f64>>)> {
+            fn rows(&self) -> Vec<(String, Option<Vec<Option<f64>>>)> {
                 self.results
                     .iter()
                     .map(|r| (r.sv.clone(), r.cn0_acr.clone()))
@@ -100,7 +104,7 @@ impl_all_output!(crate::qzss::QzssAllAcquisitionOutput);
 /// Build the antenna-relative C/N0 report from acquisition results.
 pub fn run(output: &CombinedOutput, min_cn0: f64) -> AntennaTestOutput {
     let mut antenna_numbers: Vec<usize> = Vec::new();
-    let mut candidates: Vec<(String, Vec<f64>)> = Vec::new();
+    let mut candidates: Vec<(String, Vec<Option<f64>>)> = Vec::new();
 
     macro_rules! gather {
         ($field:ident) => {
@@ -108,10 +112,14 @@ pub fn run(output: &CombinedOutput, min_cn0: f64) -> AntennaTestOutput {
                 if antenna_numbers.is_empty() {
                     antenna_numbers = all.antenna_numbers().to_vec();
                 }
-                let n_ant = all.antenna_numbers().len();
                 for (sv, cn0s) in all.rows() {
                     if let Some(cn0s) = cn0s {
-                        if cn0s.len() == n_ant && cn0s.iter().any(|&c| c >= min_cn0) {
+                        // Rows are aligned with the output's antenna_numbers
+                        // (None where an antenna produced no ACR estimate, e.g.
+                        // a dead channel).  A satellite qualifies if ANY
+                        // antenna reaches the threshold; antennas with no
+                        // estimate do not disqualify it.
+                        if cn0s.iter().any(|c| c.is_some_and(|c| c >= min_cn0)) {
                             candidates.push((sv, cn0s));
                         }
                     }
@@ -149,23 +157,28 @@ pub fn run(output: &CombinedOutput, min_cn0: f64) -> AntennaTestOutput {
     }
 
     // Per-antenna C/N0 values across the reference set (column-major).
+    // Antennas with no values at all (e.g. a dead channel) end up empty.
     let mut per_ant: Vec<(usize, Vec<f64>)> =
         antenna_numbers.iter().map(|&a| (a, Vec::new())).collect();
     for (_, cn0s) in &candidates {
-        for (col, &c) in cn0s.iter().enumerate() {
-            per_ant[col].1.push(c);
+        for (col, c) in cn0s.iter().enumerate() {
+            if let Some(c) = c {
+                per_ant[col].1.push(*c);
+            }
         }
     }
 
-    // Rank by median C/N0 (descending), ties broken by antenna index.
+    // Rank scored antennas by median C/N0 (descending), ties broken by
+    // antenna index.  Unscored antennas (no ACR values at all) come last.
     let mut ranked: Vec<(usize, f64)> = per_ant
         .iter()
+        .filter(|(_, vals)| !vals.is_empty())
         .map(|(a, vals)| (*a, crate::stats::median(vals)))
         .collect();
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     let best = ranked[0].1;
 
-    let antennas: Vec<AntennaStat> = ranked
+    let mut antennas: Vec<AntennaStat> = ranked
         .iter()
         .enumerate()
         .map(|(rank, (ant, med))| {
@@ -178,13 +191,24 @@ pub fn run(output: &CombinedOutput, min_cn0: f64) -> AntennaTestOutput {
             AntennaStat {
                 antenna: *ant,
                 n_sats,
-                median_cn0_db_hz: *med,
-                offset_db: *med - best,
-                rank: rank + 1,
+                median_cn0_db_hz: Some(*med),
+                offset_db: Some(*med - best),
+                rank: Some(rank + 1),
             }
         })
         .collect();
-    let mut antennas = antennas;
+    // Unscored antennas (all ACR values missing) still appear, with nulls.
+    for (a, vals) in &per_ant {
+        if vals.is_empty() {
+            antennas.push(AntennaStat {
+                antenna: *a,
+                n_sats: 0,
+                median_cn0_db_hz: None,
+                offset_db: None,
+                rank: None,
+            });
+        }
+    }
     antennas.sort_by_key(|s| s.antenna); // stable output order
 
     AntennaTestOutput {
@@ -209,7 +233,7 @@ mod tests {
     use std::f64::consts::TAU;
 
     /// Build a GPS per-PRN result row directly (no acquisition needed).
-    fn gps_row(sv: &str, cn0s: Option<Vec<f64>>) -> crate::acquisition::GpsPrnResult {
+    fn gps_row(sv: &str, cn0s: Option<Vec<Option<f64>>>) -> crate::acquisition::GpsPrnResult {
         crate::acquisition::GpsPrnResult {
             sv: sv.into(),
             strengths: Vec::new(),
@@ -224,7 +248,7 @@ mod tests {
     }
 
     /// Build a *Galileo* per-SV row so multi-constellation collection is tested.
-    fn gal_row(sv: &str, cn0s: Option<Vec<f64>>) -> crate::galileo::GalileoPrnResult {
+    fn gal_row(sv: &str, cn0s: Option<Vec<Option<f64>>>) -> crate::galileo::GalileoPrnResult {
         crate::galileo::GalileoPrnResult {
             sv: sv.into(),
             strengths: Vec::new(),
@@ -258,8 +282,8 @@ mod tests {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1, 2],
             results: vec![
-                gps_row("GPS01", Some(vec![40.0, 41.0, 42.0])),
-                gps_row("GPS02", Some(vec![43.0, 44.0, 45.0])),
+                gps_row("GPS01", Some(vec![Some(40.0), Some(41.0), Some(42.0)])),
+                gps_row("GPS02", Some(vec![Some(43.0), Some(44.0), Some(45.0)])),
             ],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
@@ -272,18 +296,21 @@ mod tests {
         assert_eq!(report.n_reference_satellites, 2);
         assert_eq!(report.reference_satellites, vec!["GPS01", "GPS02"]);
         assert_eq!(report.per_satellite.len(), 2);
-        assert_eq!(report.per_satellite[0].cn0_db_hz, vec![40.0, 41.0, 42.0]);
+        assert_eq!(
+            report.per_satellite[0].cn0_db_hz,
+            vec![Some(40.0), Some(41.0), Some(42.0)]
+        );
         // median per antenna: ant0 = 41.5, ant1 = 42.5, ant2 = 43.5 → best is ant2
         let stats = &report.antennas;
         assert_eq!(stats.len(), 3);
         assert_eq!(stats[0].antenna, 0);
         assert_eq!(stats[0].n_sats, 2);
-        assert!((stats[0].median_cn0_db_hz - 41.5).abs() < 1e-9);
-        assert!((stats[0].offset_db + 2.0).abs() < 1e-9);
-        assert_eq!(stats[0].rank, 3);
+        assert_eq!(stats[0].median_cn0_db_hz, Some(41.5));
+        assert_eq!(stats[0].offset_db, Some(-2.0));
+        assert_eq!(stats[0].rank, Some(3));
         assert_eq!(stats[2].antenna, 2);
-        assert!((stats[2].offset_db).abs() < 1e-9, "best antenna offset 0");
-        assert_eq!(stats[2].rank, 1);
+        assert_eq!(stats[2].offset_db, Some(0.0), "best antenna offset 0");
+        assert_eq!(stats[2].rank, Some(1));
     }
 
     #[test]
@@ -291,8 +318,8 @@ mod tests {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
             results: vec![
-                gps_row("GPS01", Some(vec![40.0, 41.0])),
-                gps_row("GPS02", Some(vec![45.0, 46.0])),
+                gps_row("GPS01", Some(vec![Some(40.0), Some(41.0)])),
+                gps_row("GPS02", Some(vec![Some(45.0), Some(46.0)])),
             ],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
@@ -307,21 +334,72 @@ mod tests {
     }
 
     #[test]
-    fn test_run_partial_cn0_dropped() {
-        // cn0_acr shorter than antenna count (some antenna failed ACR) → not
-        // a commonly-visible satellite, so it must be excluded.
+    fn test_run_missing_antenna_nulls() {
+        // Antenna 2 produced no ACR estimate for this satellite (and none at
+        // all in this output): the satellite qualifies as soon as ≥ 1 antenna
+        // reaches the threshold, its row keeps the None in place (aligned
+        // with antenna_numbers), and the antenna with no values at all is
+        // reported unscored (nulls).
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1, 2],
-            results: vec![gps_row("GPS01", Some(vec![45.0, 46.0]))],
+            results: vec![gps_row("GPS01", Some(vec![Some(45.0), Some(46.0), None]))],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
             antenna_numbers: vec![0, 1, 2],
             results: vec![],
         };
         let report = run(&output(gps, gal), 40.0);
-        assert_eq!(report.n_reference_satellites, 0);
-        assert!(report.antennas.is_empty());
-        assert!(report.reference_satellites.is_empty());
+        assert_eq!(report.n_reference_satellites, 1);
+        assert_eq!(report.reference_satellites, vec!["GPS01"]);
+        assert_eq!(
+            report.per_satellite[0].cn0_db_hz,
+            vec![Some(45.0), Some(46.0), None]
+        );
+        // antenna 2 has no values at all → unscored (nulls); antenna 1 best.
+        let antenna_by_idx = |i: usize| report.antennas.iter().find(|a| a.antenna == i).unwrap();
+        assert_eq!(antenna_by_idx(1).rank, Some(1));
+        assert_eq!(antenna_by_idx(0).rank, Some(2));
+        assert_eq!(antenna_by_idx(0).n_sats, 1);
+        assert_eq!(antenna_by_idx(1).n_sats, 1);
+        assert_eq!(antenna_by_idx(2).n_sats, 0);
+        assert_eq!(antenna_by_idx(2).median_cn0_db_hz, None);
+        assert_eq!(antenna_by_idx(2).offset_db, None);
+        assert_eq!(antenna_by_idx(2).rank, None);
+    }
+
+    #[test]
+    fn test_run_middle_antenna_null_alignment() {
+        // A None in the middle of a row must not shift the values that
+        // follow it: each entry stays bound to its antenna column.  (This is
+        // the regression guard for the ACR rows being aligned with
+        // antenna_numbers at the source.)
+        let gps = crate::acquisition::GpsAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1, 2, 3],
+            results: vec![gps_row(
+                "GPS01",
+                Some(vec![Some(45.0), None, Some(46.0), Some(47.0)]),
+            )],
+        };
+        let gal = crate::galileo::GalileoAllAcquisitionOutput {
+            antenna_numbers: vec![0, 1, 2, 3],
+            results: vec![],
+        };
+        let report = run(&output(gps, gal), 40.0);
+        assert_eq!(report.n_reference_satellites, 1);
+        assert_eq!(
+            report.per_satellite[0].cn0_db_hz,
+            vec![Some(45.0), None, Some(46.0), Some(47.0)]
+        );
+        // ant1 is unscored (no values); ant3 best (47.0), ant2 next, ant0 last.
+        let antenna_by_idx = |i: usize| report.antennas.iter().find(|a| a.antenna == i).unwrap();
+        assert_eq!(antenna_by_idx(3).rank, Some(1));
+        assert_eq!(antenna_by_idx(3).median_cn0_db_hz, Some(47.0));
+        assert_eq!(antenna_by_idx(2).rank, Some(2));
+        assert_eq!(antenna_by_idx(2).median_cn0_db_hz, Some(46.0));
+        assert_eq!(antenna_by_idx(0).rank, Some(3));
+        assert_eq!(antenna_by_idx(0).median_cn0_db_hz, Some(45.0));
+        assert_eq!(antenna_by_idx(1).rank, None);
+        assert_eq!(antenna_by_idx(1).median_cn0_db_hz, None);
     }
 
     #[test]
@@ -359,7 +437,7 @@ mod tests {
         // another antenna sees strongly (44 dB-Hz ≥ threshold).
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
-            results: vec![gps_row("GPS01", Some(vec![44.0, 30.0]))],
+            results: vec![gps_row("GPS01", Some(vec![Some(44.0), Some(30.0)]))],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
@@ -372,14 +450,14 @@ mod tests {
         // 0 satellites meeting the threshold.
         assert_eq!(report.antennas[0].antenna, 0);
         assert_eq!(report.antennas[0].n_sats, 1);
-        assert_eq!(report.antennas[0].median_cn0_db_hz, 44.0);
-        assert_eq!(report.antennas[0].offset_db, 0.0);
-        assert_eq!(report.antennas[0].rank, 1);
+        assert_eq!(report.antennas[0].median_cn0_db_hz, Some(44.0));
+        assert_eq!(report.antennas[0].offset_db, Some(0.0));
+        assert_eq!(report.antennas[0].rank, Some(1));
         assert_eq!(report.antennas[1].antenna, 1);
         assert_eq!(report.antennas[1].n_sats, 0);
-        assert_eq!(report.antennas[1].median_cn0_db_hz, 30.0);
-        assert!((report.antennas[1].offset_db + 14.0).abs() < 1e-9);
-        assert_eq!(report.antennas[1].rank, 2);
+        assert_eq!(report.antennas[1].median_cn0_db_hz, Some(30.0));
+        assert_eq!(report.antennas[1].offset_db, Some(-14.0));
+        assert_eq!(report.antennas[1].rank, Some(2));
     }
 
     #[test]
@@ -388,8 +466,8 @@ mod tests {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
             results: vec![
-                gps_row("GPS01", Some(vec![44.0, 30.0])),
-                gps_row("GPS02", Some(vec![45.0, 31.0])),
+                gps_row("GPS01", Some(vec![Some(44.0), Some(30.0)])),
+                gps_row("GPS02", Some(vec![Some(45.0), Some(31.0)])),
             ],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
@@ -400,15 +478,15 @@ mod tests {
         assert_eq!(report.n_reference_satellites, 2);
         assert_eq!(report.antennas[0].n_sats, 2);
         assert_eq!(report.antennas[1].n_sats, 0);
-        assert_eq!(report.antennas[0].median_cn0_db_hz, 44.5);
-        assert_eq!(report.antennas[1].median_cn0_db_hz, 30.5);
+        assert_eq!(report.antennas[0].median_cn0_db_hz, Some(44.5));
+        assert_eq!(report.antennas[1].median_cn0_db_hz, Some(30.5));
     }
 
     #[test]
     fn test_run_every_antenna_below_threshold_excluded() {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
-            results: vec![gps_row("GPS01", Some(vec![40.0, 41.0]))],
+            results: vec![gps_row("GPS01", Some(vec![Some(40.0), Some(41.0)]))],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
@@ -425,8 +503,8 @@ mod tests {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![1, 3],
             results: vec![
-                gps_row("GPS01", Some(vec![41.0, 42.0])),
-                gps_row("GPS02", Some(vec![42.0, 40.0])),
+                gps_row("GPS01", Some(vec![Some(41.0), Some(42.0)])),
+                gps_row("GPS02", Some(vec![Some(42.0), Some(40.0)])),
             ],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
@@ -445,11 +523,11 @@ mod tests {
     fn test_run_multiconstellation_collection() {
         let gps = crate::acquisition::GpsAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
-            results: vec![gps_row("GPS10", Some(vec![42.0, 43.0]))],
+            results: vec![gps_row("GPS10", Some(vec![Some(42.0), Some(43.0)]))],
         };
         let gal = crate::galileo::GalileoAllAcquisitionOutput {
             antenna_numbers: vec![0, 1],
-            results: vec![gal_row("GSAT05", Some(vec![44.0, 43.5]))],
+            results: vec![gal_row("GSAT05", Some(vec![Some(44.0), Some(43.5)]))],
         };
         let report = run(&output(gps, gal), 40.0);
         assert_eq!(report.n_reference_satellites, 2);
@@ -460,8 +538,8 @@ mod tests {
         // ant0 median = (42+44)/2 = 43, ant1 = (43+43.5)/2 = 43.25 → ant1 best.
         assert_eq!(report.antennas[0].antenna, 0);
         assert_eq!(report.antennas[1].antenna, 1);
-        assert!(report.antennas[1].offset_db.abs() < 1e-9);
-        assert!((report.antennas[0].offset_db + 0.25).abs() < 1e-9);
+        assert_eq!(report.antennas[1].offset_db, Some(0.0));
+        assert_eq!(report.antennas[0].offset_db, Some(-0.25));
     }
 
     // -----------------------------------------------------------------------
@@ -567,17 +645,20 @@ mod tests {
         assert!(st[0].antenna != 2, "degraded antenna ranked best");
         // The noisy antenna must rank last with a clearly negative offset.
         let weak = st.iter().find(|s| s.antenna == 2).unwrap();
-        assert_eq!(weak.rank, n_ant);
-        assert!(weak.offset_db < -5.0, "weak offset {:.2}", weak.offset_db);
+        assert_eq!(weak.rank, Some(n_ant));
+        assert!(weak.offset_db.unwrap() < -5.0, "weak offset {:.2}", weak.offset_db.unwrap());
         // The two quiet antennas must be within 1 dB of each other, and both
         // well above the noisy antenna.
         let strong: Vec<&AntennaStat> = st.iter().filter(|s| s.antenna != 2).collect();
-        assert!((strong[0].median_cn0_db_hz - strong[1].median_cn0_db_hz).abs() < 1.0);
+        let m0 = strong[0].median_cn0_db_hz.unwrap();
+        let m1 = strong[1].median_cn0_db_hz.unwrap();
+        assert!((m0 - m1).abs() < 1.0);
+        let wm = weak.median_cn0_db_hz.unwrap();
         assert!(
-            strong[0].median_cn0_db_hz - weak.median_cn0_db_hz > 5.0,
+            m0 - wm > 5.0,
             "median gap too small: strong {:.1} vs weak {:.1}",
-            strong[0].median_cn0_db_hz,
-            weak.median_cn0_db_hz
+            m0,
+            wm
         );
     }
 }

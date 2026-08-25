@@ -826,9 +826,18 @@ fn main() {
                     report.n_reference_satellites
                 );
                 for st in &report.antennas {
+                    let med = st
+                        .median_cn0_db_hz
+                        .map(|m| format!("{m:5.1}"))
+                        .unwrap_or_else(|| "  n/a".to_string());
+                    let off = st
+                        .offset_db
+                        .map(|m| format!("{m:+.1}"))
+                        .unwrap_or_else(|| " n/a".to_string());
+                    let rk = st.rank.map(|r| r.to_string()).unwrap_or_else(|| "-".to_string());
                     eprintln!(
-                        "  antenna {:2}: median C/N0 {:5.1} dB-Hz  offset {:+.1} dB  rank {}",
-                        st.antenna, st.median_cn0_db_hz, st.offset_db, st.rank
+                        "  antenna {:2}: median C/N0 {} dB-Hz  offset {} dB  rank {}",
+                        st.antenna, med, off, rk
                     );
                 }
                 eprintln!(
