@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Narrowband RFI report (`--rfi`)** — scans each antenna's spectrum for
+  narrowband lines (FFT local maxima ≥ 15 dB over the median floor,
+  clustered into interferers) and reports an autocorrelation fingerprint
+  (lags 1, 3, 16) plus the implied period, so strong interferers that
+  dominate the one-bit quantizer — and pin ACR C/N0 estimates at the table
+  floor — can be identified before trusting C/N0 results.  Dead channels
+  are flagged.  New module `src/rfi.rs`.
+
 ### Fixed
 
 - **ACR C/N0 tables calibrated for one-bit data** — the lookup tables were

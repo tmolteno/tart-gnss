@@ -59,6 +59,9 @@ tart-gnss-acquire --file data/observation.hdf --test-antennas
 tart-gnss-acquire --file data/observation.hdf --test-antennas --gps \
     --test-min-cn0 45
 
+# Narrowband RFI report per antenna
+tart-gnss-acquire --file data/observation.hdf --rfi
+
 # Benchmark (single PRN per constellation, timed breakdown)
 tart-gnss-acquire --file data/observation.hdf --benchmark
 
@@ -88,6 +91,7 @@ tart-gnss-acquire --version
 | `--benchmark`             | Single-PRN timing with startup/search breakdown     |
 | `--test-antennas`         | Rank antennas by relative C/N0 quality (implies `--cn0` and, unless a constellation flag is given, `--all`) |
 | `--test-min-cn0 X`        | Reference-satellite C/N0 threshold in dB-Hz (default 44.0) |
+| `--rfi`                   | Narrowband RFI report per antenna (spectral lines + autocorrelation fingerprint) |
 | `--version`               | Print version and exit                              |
 
 ## Simulating data
@@ -233,6 +237,45 @@ If no satellite meets the threshold on at least one antenna,
 `antennas` are empty, and a warning is printed to stderr.  A short per-antenna
 summary is also printed to stderr while the JSON report goes to stdout
 (or `--output <path>`).
+
+### RFI report (with `--rfi`)
+
+TART observations are one-bit quantized at 16.368 MHz, so a strong narrowband
+interferer (e.g. a clock harmonic) dominates the sign decision and both
+suppresses weak GNSS signals and inflates the acquisition's correlation
+floor — pinning ACR C/N0 estimates at the table floor.  `--rfi` scans each
+antenna's spectrum for narrowband lines (FFT local maxima at least 15 dB
+above the median spectral floor, clustered into interferers) and reports an
+autocorrelation fingerprint so such interferers can be spotted before
+trusting C/N0 results.  A ~2.4 MHz square-wave harmonic shows
+`acf(1) ≈ +0.4`, `acf(3) ≈ −0.7`, `acf(16) ≈ −0.5`.
+
+```json
+{
+  "antenna_numbers": [0, 1, 2],
+  "channels": [
+    {"antenna": 0, "dead": false, "acf_lag1": 0.402, "acf_lag3": -0.711,
+     "acf_lag16": -0.497, "period_samples": 6.73,
+     "lines": [{"frequency": 2433871.0, "excess_db": 57.0}]},
+    {"antenna": 1, "dead": false, "acf_lag1": 0.342, "acf_lag3": -0.519,
+     "acf_lag16": -0.482, "period_samples": 6.73, "lines": []},
+    {"antenna": 2, "dead": true, "acf_lag1": null, "acf_lag3": null,
+     "acf_lag16": null, "period_samples": null, "lines": []}
+  ]
+}
+```
+
+| Field                   | Type            | Description                                             |
+|-------------------------|-----------------|---------------------------------------------------------|
+| `channels[].antenna`    | number          | Antenna index                                           |
+| `channels[].dead`       | boolean         | Channel carries no samples (unconnected input)          |
+| `channels[].acf_lag1` / `acf_lag3` / `acf_lag16` | number \| null | Autocorrelation of the de-meaned ±1 samples at lags 1, 3, 16 (square-wave fingerprint); `null` for dead channels |
+| `channels[].period_samples` | number \| null | Period in samples implied by the strongest line (fs / f_line) |
+| `channels[].lines[].frequency` | number     | Narrowband line frequency (Hz), strongest first        |
+| `channels[].lines[].excess_db` | number     | Line power above the median spectral floor (dB)        |
+
+A readable per-antenna table is printed to stderr while the JSON report goes
+to stdout (or `--output <path>`).
 
 ## License
 

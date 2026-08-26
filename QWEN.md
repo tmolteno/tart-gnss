@@ -45,6 +45,9 @@ cargo run -- --file data/observation.hdf --test-antennas
 # Same, but only GPS, with a higher reference threshold
 cargo run -- --file data/observation.hdf --test-antennas --gps --test-min-cn0 45
 
+# Narrowband RFI report per antenna
+cargo run -- --file data/observation.hdf --rfi
+
 # Single PRN
 cargo run -- --file data/observation.hdf --gps --prn 3
 
@@ -81,6 +84,7 @@ Arguments:
 - `--j <idx>`               — second antenna index (correlation mode)
 - `--test-antennas`         — rank antennas by relative C/N0 (implies `--cn0`, and `--all` unless a constellation flag is given)
 - `--test-min-cn0 <x>`      — reference-satellite C/N0 threshold in dB-Hz (default 44.0; satellite qualifies if ≥ this on **at least one** antenna)
+- `--rfi`                   — narrowband RFI report per antenna (spectral lines + autocorrelation fingerprint)
 
 ## Source layout
 
@@ -89,6 +93,7 @@ Arguments:
 | `src/lib.rs`          | library crate root: modules + `CombinedOutput`        |
 | `src/main.rs`         | thin CLI over the library: argument parsing, mode dispatch |
 | `src/antenna_test.rs` | antenna-relative C/N0 quality report (`--test-antennas`) |
+| `src/rfi.rs`          | narrowband RFI report per antenna (`--rfi`)           |
 | `src/config.rs`       | `Config` — deserialises TART JSON from HDF5           |
 | `src/observation.rs`  | `Observation` — HDF5 reader, unpacking, correlation   |
 | `src/acquisition.rs`  | GPS C/A code gen + FFT circular cross-correlation     |

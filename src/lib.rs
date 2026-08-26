@@ -17,6 +17,7 @@ pub mod galileo;
 pub mod l1c;
 pub mod observation;
 pub mod qzss;
+pub mod rfi;
 pub mod sbas;
 pub mod simulator;
 pub mod stats;

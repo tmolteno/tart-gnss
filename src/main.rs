@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0
 
 use tart_gnss_acquire::{
-    acquisition, antenna_test, beidou, galileo, l1c, observation, qzss, sbas, simulator,
+    acquisition, antenna_test, beidou, galileo, l1c, observation, qzss, rfi, sbas, simulator,
     CombinedOutput,
 };
 
@@ -33,6 +33,7 @@ struct ParsedArgs {
     test_min_cn0: Option<f64>,
     prn_filter: Option<Vec<usize>>,
     version_flag: bool,
+    rfi_flag: bool,
     simulate: bool,
     sources: Option<String>,
     positions: Option<String>,
@@ -120,6 +121,7 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, String> {
                 );
             }
             "--version" => p.version_flag = true,
+            "--rfi" => p.rfi_flag = true,
             "--simulate" => p.simulate = true,
             "--sources" => {
                 let v = flag_value(args, &mut i, "--sources")?;
@@ -190,12 +192,26 @@ fn apply_mode_implications(p: &mut ParsedArgs) -> Result<(), String> {
             p.qzss_flag = true;
         }
     }
+    if p.rfi_flag {
+        if p.benchmark_flag {
+            return Err("--rfi cannot be combined with --benchmark".to_string());
+        }
+        if p.test_antennas_flag {
+            return Err("--rfi cannot be combined with --test-antennas".to_string());
+        }
+        if p.antenna_i.is_some() || p.antenna_j.is_some() {
+            return Err("--rfi cannot be combined with --i/--j".to_string());
+        }
+        if p.simulate {
+            return Err("--rfi cannot be combined with --simulate".to_string());
+        }
+    }
     Ok(())
 }
 
 fn print_usage(prog: &str) {
     eprintln!(
-        "usage: {prog} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--test-antennas] [--test-min-cn0 <x>] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]"
+        "usage: {prog} --file <observation.hdf> [--i <i> --j <j>] [--all] [--gps] [--galileo] [--beidou] [--sbas] [--l1c] [--qzss] [--cn0] [--test-antennas] [--test-min-cn0 <x>] [--rfi] [--prn <a,b,...>] [--ant <a,b,...>] [--filter-phase-mad <x>] [--filter-freq-mad <x>] [--output <path>] [--debug] [--benchmark]"
     );
 }
 
@@ -283,6 +299,7 @@ fn main() {
         test_min_cn0,
         prn_filter,
         version_flag: _,
+        rfi_flag,
         simulate,
         sources,
         positions,
@@ -417,6 +434,49 @@ fn main() {
     eprintln!("timestamp:   {}", obs.timestamp);
     eprintln!("antennas:    {n_ant}");
     eprintln!("sample rate: {sampling_freq} Hz");
+
+    // --- RFI report mode ---------------------------------------------------
+    if rfi_flag {
+        let report = rfi::run(&obs);
+        for ch in &report.channels {
+            if ch.dead {
+                eprintln!("  antenna {:2}: dead channel (no samples)", ch.antenna);
+                continue;
+            }
+            let acf = |k: Option<f64>| k.map(|v| format!("{v:+.3}")).unwrap_or_else(|| "  n/a".to_string());
+            let period = ch
+                .period_samples
+                .map(|p| format!("{p:.2}"))
+                .unwrap_or_else(|| "-".to_string());
+            let lines: Vec<String> = ch
+                .lines
+                .iter()
+                .map(|l| format!("{:.0} Hz ({:+.1} dB)", l.frequency, l.excess_db))
+                .collect();
+            eprintln!(
+                "  antenna {:2}: acf(1)={} acf(3)={} acf(16)={}  period={} samples",
+                ch.antenna,
+                acf(ch.acf_lag1),
+                acf(ch.acf_lag3),
+                acf(ch.acf_lag16),
+                period
+            );
+            if !lines.is_empty() {
+                eprintln!("                lines: {}", lines.join("; "));
+            }
+        }
+        let json = serde_json::to_string_pretty(&report).expect("JSON serialization failed");
+        if let Some(path) = &output_file {
+            std::fs::write(path, &json).unwrap_or_else(|e| {
+                eprintln!("error writing output file {path}: {e}");
+                std::process::exit(1);
+            });
+            eprintln!("Wrote RFI JSON to {path}");
+        } else {
+            println!("{json}");
+        }
+        return;
+    }
 
     // --- Benchmark mode ---------------------------------------------------
     if benchmark_flag {
@@ -948,6 +1008,24 @@ mod tests {
     fn test_parse_version() {
         let p = parse_args(&a(&["prog", "--version"])).unwrap();
         assert!(p.version_flag);
+    }
+
+    #[test]
+    fn test_parse_rfi_flag() {
+        let p = parse_args(&a(&["prog", "--file", "obs.hdf", "--rfi"])).unwrap();
+        assert!(p.rfi_flag);
+    }
+
+    #[test]
+    fn test_apply_mode_implications_rfi_conflicts() {
+        let mut p = parse_args(&a(&["prog", "--rfi", "--i", "0", "--j", "1"])).unwrap();
+        assert!(apply_mode_implications(&mut p).is_err());
+        let mut p = parse_args(&a(&["prog", "--rfi", "--test-antennas"])).unwrap();
+        assert!(apply_mode_implications(&mut p).is_err());
+        let mut p = parse_args(&a(&["prog", "--rfi", "--benchmark"])).unwrap();
+        assert!(apply_mode_implications(&mut p).is_err());
+        let mut p = parse_args(&a(&["prog", "--rfi", "--file", "obs.hdf"])).unwrap();
+        assert!(apply_mode_implications(&mut p).is_ok());
     }
 
     #[test]
